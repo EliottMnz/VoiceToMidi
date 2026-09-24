@@ -72,6 +72,10 @@ class NoteSegmenter(
     private var state: State = State.Silence
     private val rawNoteHistory = ArrayDeque<Int>()
 
+    /** Note actuellement tenue et confirmée, ou null en silence / en attente de confirmation. */
+    val currentTrackedNote: Int?
+        get() = (state as? State.Tracking)?.note
+
     // Candidat en attente de confirmation : soit un onset (depuis le silence),
     // soit un changement de note (depuis une note déjà tenue).
     private var candidateNote: Int? = null

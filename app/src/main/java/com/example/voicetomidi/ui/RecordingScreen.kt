@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -42,6 +43,7 @@ fun RecordingScreen(
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
+    var showHistory by remember { mutableStateOf(false) }
 
     var hasPermission by remember {
         mutableStateOf(
@@ -115,11 +117,29 @@ fun RecordingScreen(
 
         HorizontalDivider(Modifier.fillMaxWidth())
 
-        Text("Notes détectées (${uiState.completedNotes.size})", style = MaterialTheme.typography.titleSmall)
+        PianoRollVisualizer(
+            activeMidiNote = uiState.currentTrackedMidiNote,
+            intensity = uiState.currentIntensity,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        )
 
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(uiState.completedNotes.reversed()) { note ->
-                Text("${midiNoteName(note.midiNote)} — ${note.durationMs} ms — vélocité ${note.velocity}")
+        TextButton(onClick = { showHistory = !showHistory }) {
+            Text(
+                if (showHistory) {
+                    "Masquer l'historique (${uiState.completedNotes.size})"
+                } else {
+                    "Historique (${uiState.completedNotes.size})"
+                }
+            )
+        }
+
+        if (showHistory) {
+            LazyColumn(modifier = Modifier.heightIn(max = 160.dp)) {
+                items(uiState.completedNotes.reversed()) { note ->
+                    Text("${midiNoteName(note.midiNote)} — ${note.durationMs} ms — vélocité ${note.velocity}")
+                }
             }
         }
     }

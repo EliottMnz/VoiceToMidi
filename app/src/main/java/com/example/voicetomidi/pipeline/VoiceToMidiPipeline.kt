@@ -15,11 +15,16 @@ import kotlinx.coroutines.flow.flowOn
 /**
  * Un instantané du pipeline pour une fenêtre d'analyse donnée.
  * [completedNote] n'est non-null que sur la frame où une note vient de se clore.
+ * [trackedNote] est la note *stabilisée* par [NoteSegmenter] (confirmée, avec
+ * hystérésis), à distinguer de [pitch] qui est la lecture brute frame par
+ * frame — c'est [trackedNote] qu'il faut utiliser pour un affichage visuel
+ * stable (ex: clavier), [pitch] pour une lecture précise en Hz.
  */
 data class LiveFrame(
     val timestampMs: Long,
     val pitch: PitchResult,
     val rmsAmplitude: Float,
+    val trackedNote: Int?,
     val completedNote: NoteEvent?
 )
 
@@ -59,14 +64,14 @@ class VoiceToMidiPipeline(
                 val pitch = pitchDetector.detectPitch(window)
                 val completedNote = segmenter.processFrame(timestampMs, pitch, amplitude)
 
-                emit(LiveFrame(timestampMs, pitch, amplitude, completedNote))
+                emit(LiveFrame(timestampMs, pitch, amplitude, segmenter.currentTrackedNote, completedNote))
                 frameIndex++
             }
 
         // Le flux de capture s'est terminé normalement (stop() a été appelé) :
         // on clôt une éventuelle note encore tenue.
         segmenter.finish(lastTimestampMs)?.let { finalNote ->
-            emit(LiveFrame(lastTimestampMs, PitchResult.Unvoiced, 0f, finalNote))
+            emit(LiveFrame(lastTimestampMs, PitchResult.Unvoiced, 0f, null, finalNote))
         }
     }.flowOn(Dispatchers.IO)
 

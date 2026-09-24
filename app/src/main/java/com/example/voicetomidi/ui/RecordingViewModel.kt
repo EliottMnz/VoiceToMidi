@@ -18,8 +18,21 @@ data class RecordingUiState(
     val isRecording: Boolean = false,
     val currentNoteName: String? = null,
     val currentFrequencyHz: Float? = null,
+    /** Note stabilisée par le NoteSegmenter (confirmée), pour un affichage visuel stable. */
+    val currentTrackedMidiNote: Int? = null,
+    /** Intensité normalisée [0, 1] de la note tenue, pour une jauge visuelle. */
+    val currentIntensity: Float = 0f,
     val completedNotes: List<NoteEvent> = emptyList()
 )
+
+/** Bornes d'amplitude RMS utilisées pour normaliser la jauge visuelle (cohérent avec NoteSegmenter). */
+private const val MIN_GAUGE_AMPLITUDE = 0.01f
+private const val MAX_GAUGE_AMPLITUDE = 0.5f
+
+private fun amplitudeToIntensity(rms: Float): Float {
+    val clamped = rms.coerceIn(MIN_GAUGE_AMPLITUDE, MAX_GAUGE_AMPLITUDE)
+    return (clamped - MIN_GAUGE_AMPLITUDE) / (MAX_GAUGE_AMPLITUDE - MIN_GAUGE_AMPLITUDE)
+}
 
 class RecordingViewModel : ViewModel() {
 
@@ -40,12 +53,22 @@ class RecordingViewModel : ViewModel() {
                     current.copy(
                         currentNoteName = if (voiced) midiNoteName(frequencyToMidiNote(frame.pitch.frequencyHz)) else null,
                         currentFrequencyHz = if (voiced) frame.pitch.frequencyHz else null,
+                        currentTrackedMidiNote = frame.trackedNote,
+                        currentIntensity = if (frame.trackedNote != null) amplitudeToIntensity(frame.rmsAmplitude) else 0f,
                         completedNotes = frame.completedNote?.let { current.completedNotes + it }
                             ?: current.completedNotes
                     )
                 }
             }
-            _uiState.update { it.copy(isRecording = false, currentNoteName = null, currentFrequencyHz = null) }
+            _uiState.update {
+                it.copy(
+                    isRecording = false,
+                    currentNoteName = null,
+                    currentFrequencyHz = null,
+                    currentTrackedMidiNote = null,
+                    currentIntensity = 0f
+                )
+            }
             captureJob = null
         }
     }
