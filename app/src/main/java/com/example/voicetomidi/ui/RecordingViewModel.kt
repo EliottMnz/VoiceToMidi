@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.voicetomidi.audio.AudioCaptureManager
 import com.example.voicetomidi.audio.AudioSource
+import com.example.voicetomidi.audio.DemoScenario
 import com.example.voicetomidi.audio.SyntheticVoiceSource
 import com.example.voicetomidi.midi.MidiFileWriter
 import com.example.voicetomidi.notes.NoteEvent
@@ -59,11 +60,11 @@ class RecordingViewModel : ViewModel() {
     fun startRecording() = start(AudioCaptureManager())
 
     /**
-     * Rejoue une mélodie générée à la place du micro — pour tester tout le
+     * Rejoue un [DemoScenario] à la place du micro — pour tester tout le
      * pipeline (clavier, export) sans chanter, ex. dans un lieu où on ne peut
      * pas faire de bruit. Aucune permission requise.
      */
-    fun startDemo() = start(SyntheticVoiceSource())
+    fun startDemo(scenario: DemoScenario = DemoScenario.STANDARD) = start(SyntheticVoiceSource(scenario = scenario))
 
     private fun start(source: AudioSource) {
         if (captureJob != null) return

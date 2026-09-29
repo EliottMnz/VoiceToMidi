@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,6 +15,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -30,6 +33,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.voicetomidi.audio.DemoScenario
 import com.example.voicetomidi.notes.midiNoteName
 import com.example.voicetomidi.ui.theme.EmoButton
 import com.example.voicetomidi.ui.theme.EmoOutlinedButton
@@ -43,6 +47,7 @@ fun RecordingScreen(
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
     var showHistory by remember { mutableStateOf(false) }
+    var showDemoMenu by remember { mutableStateOf(false) }
 
     var hasPermission by remember {
         mutableStateOf(
@@ -101,11 +106,24 @@ fun RecordingScreen(
                     onClick = { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO) }
                 )
             }
-            EmoOutlinedButton(
-                text = "Mode démo",
-                onClick = viewModel::startDemo,
-                enabled = !uiState.isRecording && !uiState.isRefining
-            )
+            Box {
+                EmoOutlinedButton(
+                    text = "Mode démo",
+                    onClick = { showDemoMenu = true },
+                    enabled = !uiState.isRecording && !uiState.isRefining
+                )
+                DropdownMenu(expanded = showDemoMenu, onDismissRequest = { showDemoMenu = false }) {
+                    DemoScenario.entries.forEach { scenario ->
+                        DropdownMenuItem(
+                            text = { Text(scenario.displayName) },
+                            onClick = {
+                                showDemoMenu = false
+                                viewModel.startDemo(scenario)
+                            }
+                        )
+                    }
+                }
+            }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
