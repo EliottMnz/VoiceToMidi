@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -151,6 +153,18 @@ fun RecordingScreen(
                 text = "Exporter",
                 onClick = { exportLauncher.launch("voicetomidi_${System.currentTimeMillis()}.mid") },
                 enabled = uiState.completedNotes.isNotEmpty() && !uiState.isRecording && !uiState.isRefining
+            )
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+                checked = uiState.isQuantizeEnabled,
+                onCheckedChange = { viewModel.toggleQuantize() },
+                colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
+            )
+            Text(
+                "Quantifier (1/16 @ 120 BPM)",
+                style = MaterialTheme.typography.bodyMedium
             )
         }
 

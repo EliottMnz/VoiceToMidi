@@ -12,6 +12,7 @@ import com.example.voicetomidi.notes.RawPitchFrame
 import com.example.voicetomidi.notes.ViterbiNoteSegmenter
 import com.example.voicetomidi.notes.frequencyToMidiNote
 import com.example.voicetomidi.notes.midiNoteName
+import com.example.voicetomidi.notes.quantize
 import com.example.voicetomidi.pipeline.VoiceToMidiPipeline
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -35,7 +36,9 @@ data class RecordingUiState(
     val currentIntensity: Float = 0f,
     val completedNotes: List<NoteEvent> = emptyList(),
     /** Message si la capture a échoué (micro indisponible, etc.) ; effacé au prochain démarrage. */
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    /** Cale les notes sur une grille de doubles-croches à l'export, au lieu des timings réels. */
+    val isQuantizeEnabled: Boolean = false
 )
 
 /** Bornes d'amplitude RMS utilisées pour normaliser la jauge visuelle (cohérent avec NoteSegmenter). */
@@ -74,7 +77,13 @@ class RecordingViewModel : ViewModel() {
         rawFrameLog.clear()
         val newPipeline = VoiceToMidiPipeline(audioSource = source)
         pipeline = newPipeline
-        _uiState.update { RecordingUiState(isRecording = true, completedNotes = it.completedNotes) }
+        _uiState.update {
+            RecordingUiState(
+                isRecording = true,
+                completedNotes = it.completedNotes,
+                isQuantizeEnabled = it.isQuantizeEnabled
+            )
+        }
 
         captureJob = viewModelScope.launch {
             try {
@@ -146,7 +155,19 @@ class RecordingViewModel : ViewModel() {
         _uiState.update { it.copy(completedNotes = emptyList()) }
     }
 
-    fun buildMidiFile(): ByteArray = MidiFileWriter().write(_uiState.value.completedNotes)
+    fun toggleQuantize() {
+        _uiState.update { it.copy(isQuantizeEnabled = !it.isQuantizeEnabled) }
+    }
+
+    fun buildMidiFile(): ByteArray {
+        val state = _uiState.value
+        val notes = if (state.isQuantizeEnabled) {
+            quantize(state.completedNotes, bpm = MidiFileWriter.DEFAULT_BPM)
+        } else {
+            state.completedNotes
+        }
+        return MidiFileWriter().write(notes)
+    }
 
     override fun onCleared() {
         pipeline?.stop()
