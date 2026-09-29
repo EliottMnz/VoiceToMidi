@@ -168,6 +168,18 @@ fun RecordingScreen(
             )
         }
 
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(
+                checked = uiState.isPitchBendEnabled,
+                onCheckedChange = { viewModel.togglePitchBend() },
+                colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
+            )
+            Text(
+                "Vibrato (pitch bend)",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+
         Text(
             text = when {
                 uiState.isRefining -> "Analyse en cours…"

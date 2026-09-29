@@ -1,6 +1,7 @@
 package com.example.voicetomidi.midi
 
 import com.example.voicetomidi.notes.NoteEvent
+import com.example.voicetomidi.notes.PitchBendEvent
 import java.io.ByteArrayInputStream
 import javax.sound.midi.MidiSystem
 import javax.sound.midi.ShortMessage
@@ -59,5 +60,49 @@ class MidiFileWriterTest {
     fun `an empty note list still produces a valid, parsable MIDI file`() {
         val sequence = MidiSystem.getSequence(ByteArrayInputStream(MidiFileWriter().write(emptyList())))
         assertTrue(sequence.tracks.size == 1)
+    }
+
+    @Test
+    fun `pitch bend events are written and decoded back with the correct 14-bit value`() {
+        val notes = listOf(NoteEvent(midiNote = 60, startTimeMs = 0, endTimeMs = 500, velocity = 90))
+        val bends = listOf(PitchBendEvent(timestampMs = 250, value = 10240))
+
+        val sequence = MidiSystem.getSequence(ByteArrayInputStream(MidiFileWriter().write(notes, bends)))
+        val messages = (0 until sequence.tracks.single().size()).map { sequence.tracks.single().get(it) }
+
+        val bendMessages = messages.mapNotNull { it.message as? ShortMessage }
+            .filter { it.command == ShortMessage.PITCH_BEND }
+
+        assertEquals(1, bendMessages.size)
+        val decoded = bendMessages[0].data1 or (bendMessages[0].data2 shl 7)
+        assertEquals(10240, decoded)
+    }
+
+    @Test
+    fun `pitch bend range is declared via RPN when pitch bends are present`() {
+        val notes = listOf(NoteEvent(midiNote = 60, startTimeMs = 0, endTimeMs = 500, velocity = 90))
+        val bends = listOf(PitchBendEvent(timestampMs = 0, value = 8192))
+
+        val sequence = MidiSystem.getSequence(ByteArrayInputStream(MidiFileWriter().write(notes, bends)))
+        val controlChanges = (0 until sequence.tracks.single().size())
+            .map { sequence.tracks.single().get(it) }
+            .mapNotNull { it.message as? ShortMessage }
+            .filter { it.command == ShortMessage.CONTROL_CHANGE }
+
+        // RPN "pitch bend sensitivity" (101=0, 100=0) avec 2 demi-tons (CC6=2), puis RPN null (101=127,100=127).
+        assertEquals(listOf(101, 100, 6, 38, 101, 100), controlChanges.map { it.data1 })
+        assertEquals(listOf(0, 0, 2, 0, 127, 127), controlChanges.map { it.data2 })
+    }
+
+    @Test
+    fun `no pitch bend or RPN messages are written when no pitch bends are given`() {
+        val notes = listOf(NoteEvent(midiNote = 60, startTimeMs = 0, endTimeMs = 500, velocity = 90))
+
+        val sequence = MidiSystem.getSequence(ByteArrayInputStream(MidiFileWriter().write(notes)))
+        val messages = (0 until sequence.tracks.single().size())
+            .map { sequence.tracks.single().get(it) }
+            .mapNotNull { it.message as? ShortMessage }
+
+        assertTrue(messages.none { it.command == ShortMessage.PITCH_BEND || it.command == ShortMessage.CONTROL_CHANGE })
     }
 }

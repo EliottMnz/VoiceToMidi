@@ -1,11 +1,13 @@
 package com.example.voicetomidi.midi
 
 import com.example.voicetomidi.notes.NoteEvent
+import com.example.voicetomidi.notes.PitchBendEvent
 import java.io.ByteArrayOutputStream
 
 /**
  * Écrit un Standard MIDI File (SMF format 0, une seule piste) à partir d'une
- * liste de [NoteEvent]. javax.sound.midi n'existe pas sur Android : on
+ * liste de [NoteEvent] (et, en option, d'une courbe de [PitchBendEvent] pour
+ * préserver le vibrato). javax.sound.midi n'existe pas sur Android : on
  * sérialise donc directement les octets du format (spec MIDI 1.0 / SMF).
  *
  * Chaque timestamp est converti en ticks indépendamment depuis son temps
@@ -17,12 +19,13 @@ class MidiFileWriter(
     private val beatsPerMinute: Int = DEFAULT_BPM
 ) {
 
-    fun write(notes: List<NoteEvent>): ByteArray {
+    fun write(notes: List<NoteEvent>, pitchBends: List<PitchBendEvent> = emptyList()): ByteArray {
         val track = ByteArrayOutputStream()
         writeTempoEvent(track)
+        if (pitchBends.isNotEmpty()) writePitchBendRangeSetup(track)
 
         var lastTick = 0L
-        for (event in buildEventList(notes)) {
+        for (event in buildEventList(notes, pitchBends)) {
             writeVariableLengthQuantity(track, event.tick - lastTick)
             track.write(event.bytes)
             lastTick = event.tick
@@ -38,7 +41,7 @@ class MidiFileWriter(
 
     private data class MidiEvent(val tick: Long, val order: Int, val bytes: ByteArray)
 
-    private fun buildEventList(notes: List<NoteEvent>): List<MidiEvent> {
+    private fun buildEventList(notes: List<NoteEvent>, pitchBends: List<PitchBendEvent>): List<MidiEvent> {
         val events = mutableListOf<MidiEvent>()
         for (note in notes) {
             val pitch = note.midiNote.coerceIn(0, 127)
@@ -48,7 +51,24 @@ class MidiFileWriter(
             events += MidiEvent(millisToTicks(note.startTimeMs), order = 1, bytes = byteArrayOf(NOTE_ON, pitch.toByte(), velocity.toByte()))
             events += MidiEvent(millisToTicks(note.endTimeMs), order = 0, bytes = byteArrayOf(NOTE_OFF, pitch.toByte(), 0))
         }
+        for (bend in pitchBends) {
+            val value = bend.value.coerceIn(0, 16383)
+            events += MidiEvent(
+                millisToTicks(bend.timestampMs),
+                order = 2,
+                bytes = byteArrayOf(PITCH_BEND, (value and 0x7F).toByte(), ((value shr 7) and 0x7F).toByte())
+            )
+        }
         return events.sortedWith(compareBy({ it.tick }, { it.order }))
+    }
+
+    /** Déclare explicitement la plage de pitch bend (±2 demi-tons, standard General MIDI) via une RPN. */
+    private fun writePitchBendRangeSetup(track: ByteArrayOutputStream) {
+        val controlChanges = listOf(101 to 0, 100 to 0, 6 to 2, 38 to 0, 101 to 127, 100 to 127)
+        for ((controller, value) in controlChanges) {
+            writeVariableLengthQuantity(track, 0)
+            track.write(byteArrayOf(CONTROL_CHANGE, controller.toByte(), value.toByte()))
+        }
     }
 
     private fun millisToTicks(timeMs: Long): Long {
@@ -119,5 +139,7 @@ class MidiFileWriter(
         const val DEFAULT_BPM = 120
         private const val NOTE_ON = 0x90.toByte()
         private const val NOTE_OFF = 0x80.toByte()
+        private const val CONTROL_CHANGE = 0xB0.toByte()
+        private const val PITCH_BEND = 0xE0.toByte()
     }
 }

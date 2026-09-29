@@ -10,6 +10,7 @@ import com.example.voicetomidi.midi.MidiFileWriter
 import com.example.voicetomidi.notes.NoteEvent
 import com.example.voicetomidi.notes.RawPitchFrame
 import com.example.voicetomidi.notes.ViterbiNoteSegmenter
+import com.example.voicetomidi.notes.buildPitchBendCurve
 import com.example.voicetomidi.notes.frequencyToMidiNote
 import com.example.voicetomidi.notes.midiNoteName
 import com.example.voicetomidi.notes.quantize
@@ -38,7 +39,9 @@ data class RecordingUiState(
     /** Message si la capture a échoué (micro indisponible, etc.) ; effacé au prochain démarrage. */
     val errorMessage: String? = null,
     /** Cale les notes sur une grille de doubles-croches à l'export, au lieu des timings réels. */
-    val isQuantizeEnabled: Boolean = false
+    val isQuantizeEnabled: Boolean = false,
+    /** Préserve le vibrato/l'imprécision de la voix à l'export via des messages MIDI Pitch Bend. */
+    val isPitchBendEnabled: Boolean = false
 )
 
 /** Bornes d'amplitude RMS utilisées pour normaliser la jauge visuelle (cohérent avec NoteSegmenter). */
@@ -81,7 +84,8 @@ class RecordingViewModel : ViewModel() {
             RecordingUiState(
                 isRecording = true,
                 completedNotes = it.completedNotes,
-                isQuantizeEnabled = it.isQuantizeEnabled
+                isQuantizeEnabled = it.isQuantizeEnabled,
+                isPitchBendEnabled = it.isPitchBendEnabled
             )
         }
 
@@ -159,14 +163,24 @@ class RecordingViewModel : ViewModel() {
         _uiState.update { it.copy(isQuantizeEnabled = !it.isQuantizeEnabled) }
     }
 
+    fun togglePitchBend() {
+        _uiState.update { it.copy(isPitchBendEnabled = !it.isPitchBendEnabled) }
+    }
+
     fun buildMidiFile(): ByteArray {
         val state = _uiState.value
-        val notes = if (state.isQuantizeEnabled) {
-            quantize(state.completedNotes, bpm = MidiFileWriter.DEFAULT_BPM)
+        val originalNotes = state.completedNotes
+        val outputNotes = if (state.isQuantizeEnabled) {
+            quantize(originalNotes, bpm = MidiFileWriter.DEFAULT_BPM)
         } else {
-            state.completedNotes
+            originalNotes
         }
-        return MidiFileWriter().write(notes)
+        val pitchBends = if (state.isPitchBendEnabled) {
+            buildPitchBendCurve(originalNotes, outputNotes, rawFrameLog)
+        } else {
+            emptyList()
+        }
+        return MidiFileWriter().write(outputNotes, pitchBends)
     }
 
     override fun onCleared() {
