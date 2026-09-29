@@ -25,8 +25,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.voicetomidi.notes.midiNoteName
 
-private const val LOW_NOTE = 48 // C3
-private const val HIGH_NOTE = 84 // C6
+private const val LOW_NOTE = 33 // A1
+private const val HIGH_NOTE = 96 // C7
 private val BLACK_KEY_SEMITONES = setOf(1, 3, 6, 8, 10)
 
 /**

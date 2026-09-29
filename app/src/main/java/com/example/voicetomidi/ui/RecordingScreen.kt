@@ -14,10 +14,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -33,13 +31,14 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.voicetomidi.notes.midiNoteName
+import com.example.voicetomidi.ui.theme.EmoButton
+import com.example.voicetomidi.ui.theme.EmoOutlinedButton
 import java.io.IOException
 
 @Composable
 fun RecordingScreen(
     modifier: Modifier = Modifier,
-    viewModel: RecordingViewModel = viewModel(),
-    onChangeTheme: () -> Unit = {}
+    viewModel: RecordingViewModel = viewModel()
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
@@ -76,46 +75,48 @@ fun RecordingScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            TextButton(onClick = onChangeTheme) {
-                Text("🎨 Thème")
-            }
-        }
+        Text(
+            "VOICE TO MIDI",
+            style = MaterialTheme.typography.headlineSmall,
+            color = MaterialTheme.colorScheme.primary
+        )
 
         if (!hasPermission) {
-            Text("VoiceToMidi a besoin du micro pour détecter les notes chantées.")
-            Button(onClick = { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO) }) {
-                Text("Autoriser le micro")
-            }
+            Text(
+                "L'app a besoin du micro pour détecter les notes chantées.",
+                style = MaterialTheme.typography.bodyLarge
+            )
+            EmoButton(text = "Autoriser le micro", onClick = { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO) })
             return@Column
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
-                if (uiState.isRecording) viewModel.stopRecording() else viewModel.startRecording()
-            }) {
-                Text(if (uiState.isRecording) "Arrêter" else "Enregistrer")
-            }
-            OutlinedButton(onClick = viewModel::clearNotes, enabled = uiState.completedNotes.isNotEmpty()) {
-                Text("Effacer")
-            }
-            Button(
+            EmoButton(
+                text = if (uiState.isRecording) "Arrêter" else "Enregistrer",
+                onClick = { if (uiState.isRecording) viewModel.stopRecording() else viewModel.startRecording() }
+            )
+            EmoOutlinedButton(
+                text = "Effacer",
+                onClick = viewModel::clearNotes,
+                enabled = uiState.completedNotes.isNotEmpty()
+            )
+            EmoOutlinedButton(
+                text = "Exporter",
                 onClick = { exportLauncher.launch("voicetomidi_${System.currentTimeMillis()}.mid") },
                 enabled = uiState.completedNotes.isNotEmpty() && !uiState.isRecording
-            ) {
-                Text("Exporter en .mid")
-            }
+            )
         }
 
         Text(
             text = uiState.currentNoteName?.let { name ->
                 val freq = uiState.currentFrequencyHz ?: 0f
-                "Note actuelle : $name (${"%.1f".format(freq)} Hz)"
-            } ?: if (uiState.isRecording) "..." else "En attente",
-            style = MaterialTheme.typography.titleMedium
+                "$name — ${"%.1f".format(freq)} Hz"
+            } ?: if (uiState.isRecording) "…" else "En attente",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        HorizontalDivider(Modifier.fillMaxWidth())
+        HorizontalDivider(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.outline)
 
         PianoRollVisualizer(
             activeMidiNote = uiState.currentTrackedMidiNote,
@@ -127,18 +128,20 @@ fun RecordingScreen(
 
         TextButton(onClick = { showHistory = !showHistory }) {
             Text(
-                if (showHistory) {
-                    "Masquer l'historique (${uiState.completedNotes.size})"
-                } else {
-                    "Historique (${uiState.completedNotes.size})"
-                }
+                (if (showHistory) "Masquer l'historique (${uiState.completedNotes.size})" else "Historique (${uiState.completedNotes.size})")
+                    .uppercase(),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary
             )
         }
 
         if (showHistory) {
             LazyColumn(modifier = Modifier.heightIn(max = 160.dp)) {
                 items(uiState.completedNotes.reversed()) { note ->
-                    Text("${midiNoteName(note.midiNote)} — ${note.durationMs} ms — vélocité ${note.velocity}")
+                    Text(
+                        "${midiNoteName(note.midiNote)} — ${note.durationMs} ms — vélocité ${note.velocity}",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                 }
             }
         }
