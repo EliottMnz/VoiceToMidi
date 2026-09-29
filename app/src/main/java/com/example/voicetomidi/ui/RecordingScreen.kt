@@ -54,6 +54,7 @@ fun RecordingScreen(
     val uiState by viewModel.uiState.collectAsState()
     var showHistory by remember { mutableStateOf(false) }
     var showDemoMenu by remember { mutableStateOf(false) }
+    var showTapTempo by remember { mutableStateOf(false) }
 
     var hasPermission by remember {
         mutableStateOf(
@@ -163,7 +164,11 @@ fun RecordingScreen(
                 colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
             )
             Text(
-                "Quantifier (tempo détecté automatiquement)",
+                if (uiState.isTapTempoValidated) {
+                    "Quantifier (tempo tapé : ${uiState.tapTempoBpm} BPM)"
+                } else {
+                    "Quantifier (tempo détecté automatiquement)"
+                },
                 style = MaterialTheme.typography.bodyMedium
             )
         }
@@ -178,6 +183,53 @@ fun RecordingScreen(
                 "Vibrato (pitch bend)",
                 style = MaterialTheme.typography.bodyMedium
             )
+        }
+
+        TextButton(onClick = { showTapTempo = !showTapTempo }) {
+            Text(
+                (if (uiState.isTapTempoValidated) {
+                    "Tempo tapé : ${uiState.tapTempoBpm} BPM (validé)"
+                } else {
+                    "Tempo (tap tempo)"
+                }).uppercase(),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+
+        if (showTapTempo) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                EmoButton(text = "TAP", onClick = viewModel::onTap)
+
+                Text(
+                    uiState.tapTempoBpm?.let { bpm -> "$bpm BPM (${uiState.tapCount} tapotements)" }
+                        ?: "Tapote au moins 2 fois au rythme voulu",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    EmoOutlinedButton(
+                        text = if (uiState.isMetronomePlaying) "Arrêter" else "Écouter",
+                        onClick = {
+                            if (uiState.isMetronomePlaying) viewModel.stopTapTempoPreview() else viewModel.previewTapTempo()
+                        },
+                        enabled = uiState.tapTempoBpm != null
+                    )
+                    EmoOutlinedButton(
+                        text = "Valider",
+                        onClick = viewModel::validateTapTempo,
+                        enabled = uiState.tapTempoBpm != null && !uiState.isTapTempoValidated
+                    )
+                    EmoOutlinedButton(
+                        text = "Réinitialiser",
+                        onClick = viewModel::resetTapTempo,
+                        enabled = uiState.tapTempoBpm != null
+                    )
+                }
+            }
         }
 
         Text(

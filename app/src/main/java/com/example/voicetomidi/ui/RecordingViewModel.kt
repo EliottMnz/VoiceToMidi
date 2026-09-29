@@ -5,10 +5,12 @@ import androidx.lifecycle.viewModelScope
 import com.example.voicetomidi.audio.AudioCaptureManager
 import com.example.voicetomidi.audio.AudioSource
 import com.example.voicetomidi.audio.DemoScenario
+import com.example.voicetomidi.audio.MetronomeClicker
 import com.example.voicetomidi.audio.SyntheticVoiceSource
 import com.example.voicetomidi.midi.MidiFileWriter
 import com.example.voicetomidi.notes.NoteEvent
 import com.example.voicetomidi.notes.RawPitchFrame
+import com.example.voicetomidi.notes.TapTempoEstimator
 import com.example.voicetomidi.notes.ViterbiNoteSegmenter
 import com.example.voicetomidi.notes.buildPitchBendCurve
 import com.example.voicetomidi.notes.estimateGridMs
@@ -42,7 +44,13 @@ data class RecordingUiState(
     /** Cale les notes sur une grille de doubles-croches à l'export, au lieu des timings réels. */
     val isQuantizeEnabled: Boolean = false,
     /** Préserve le vibrato/l'imprécision de la voix à l'export via des messages MIDI Pitch Bend. */
-    val isPitchBendEnabled: Boolean = false
+    val isPitchBendEnabled: Boolean = false,
+    /** BPM calculé depuis les derniers tapotements (tap tempo), ou null si pas encore assez de données. */
+    val tapTempoBpm: Int? = null,
+    val tapCount: Int = 0,
+    val isMetronomePlaying: Boolean = false,
+    /** Si vrai, [tapTempoBpm] remplace l'estimation automatique du tempo pour la quantification. */
+    val isTapTempoValidated: Boolean = false
 )
 
 /** Bornes d'amplitude RMS utilisées pour normaliser la jauge visuelle (cohérent avec NoteSegmenter). */
@@ -68,6 +76,10 @@ class RecordingViewModel : ViewModel() {
     // Historique brut de la session en cours, pour le raffinage HMM/Viterbi à l'arrêt.
     // Voir NoteSegmenter (temps réel, hystérésis) vs ViterbiNoteSegmenter (post-traitement).
     private val rawFrameLog = mutableListOf<RawPitchFrame>()
+
+    private val tapTempoEstimator = TapTempoEstimator()
+    private val metronome = MetronomeClicker()
+    private var metronomeJob: Job? = null
 
     private val _uiState = MutableStateFlow(RecordingUiState())
     val uiState: StateFlow<RecordingUiState> = _uiState.asStateFlow()
@@ -174,18 +186,61 @@ class RecordingViewModel : ViewModel() {
         _uiState.update { it.copy(isPitchBendEnabled = !it.isPitchBendEnabled) }
     }
 
+    /** Enregistre un tapotement au tempo voulu par l'utilisateur (tap tempo). */
+    fun onTap() {
+        val bpm = tapTempoEstimator.tap(System.currentTimeMillis())
+        _uiState.update {
+            it.copy(tapTempoBpm = bpm, tapCount = tapTempoEstimator.tapCount(), isTapTempoValidated = false)
+        }
+    }
+
+    /** Joue un clic de métronome au tempo tapé, pour le valider à l'oreille avant de l'utiliser. */
+    fun previewTapTempo() {
+        val bpm = _uiState.value.tapTempoBpm ?: return
+        metronomeJob?.cancel()
+        metronomeJob = viewModelScope.launch {
+            _uiState.update { it.copy(isMetronomePlaying = true) }
+            try {
+                metronome.play(bpm)
+            } finally {
+                _uiState.update { it.copy(isMetronomePlaying = false) }
+            }
+        }
+    }
+
+    fun stopTapTempoPreview() {
+        metronomeJob?.cancel()
+        metronomeJob = null
+        _uiState.update { it.copy(isMetronomePlaying = false) }
+    }
+
+    /** Confirme le tempo tapé : il remplacera l'estimation automatique pour la quantification. */
+    fun validateTapTempo() {
+        if (_uiState.value.tapTempoBpm != null) {
+            _uiState.update { it.copy(isTapTempoValidated = true) }
+        }
+    }
+
+    fun resetTapTempo() {
+        stopTapTempoPreview()
+        tapTempoEstimator.reset()
+        _uiState.update { it.copy(tapTempoBpm = null, tapCount = 0, isTapTempoValidated = false) }
+    }
+
     fun buildMidiFile(): ByteArray {
         val state = _uiState.value
         val originalNotes = state.completedNotes
 
-        // Tempo du fichier MIDI exporté : celui détecté depuis la performance quand
-        // la quantification est active (pour que la grille soit visuellement alignée
-        // dans un DAW), sinon le tempo fixe par défaut.
+        // Tempo du fichier MIDI exporté, quand la quantification est active : le tempo
+        // tapé et validé par l'utilisateur s'il y en a un, sinon celui détecté
+        // automatiquement depuis la performance. Sert aussi de grille pour que
+        // l'affichage soit visuellement aligné dans un DAW.
         val outputNotes: List<NoteEvent>
         val bpm: Int
         if (state.isQuantizeEnabled) {
-            val gridMs = estimateGridMs(originalNotes)
-            bpm = bpmFromGridMs(gridMs)
+            val validatedBpm = state.tapTempoBpm.takeIf { state.isTapTempoValidated }
+            val gridMs = if (validatedBpm != null) 60_000.0 / validatedBpm / 4 else estimateGridMs(originalNotes)
+            bpm = validatedBpm ?: bpmFromGridMs(gridMs)
             outputNotes = quantize(originalNotes, gridMs = gridMs)
         } else {
             bpm = MidiFileWriter.DEFAULT_BPM
@@ -202,6 +257,7 @@ class RecordingViewModel : ViewModel() {
 
     override fun onCleared() {
         pipeline?.stop()
+        metronome.release()
         super.onCleared()
     }
 }
