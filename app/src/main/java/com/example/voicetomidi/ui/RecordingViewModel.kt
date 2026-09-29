@@ -11,6 +11,7 @@ import com.example.voicetomidi.notes.NoteEvent
 import com.example.voicetomidi.notes.RawPitchFrame
 import com.example.voicetomidi.notes.ViterbiNoteSegmenter
 import com.example.voicetomidi.notes.buildPitchBendCurve
+import com.example.voicetomidi.notes.estimateGridMs
 import com.example.voicetomidi.notes.frequencyToMidiNote
 import com.example.voicetomidi.notes.midiNoteName
 import com.example.voicetomidi.notes.quantize
@@ -51,6 +52,12 @@ private const val MAX_GAUGE_AMPLITUDE = 0.5f
 private fun amplitudeToIntensity(rms: Float): Float {
     val clamped = rms.coerceIn(MIN_GAUGE_AMPLITUDE, MAX_GAUGE_AMPLITUDE)
     return (clamped - MIN_GAUGE_AMPLITUDE) / (MAX_GAUGE_AMPLITUDE - MIN_GAUGE_AMPLITUDE)
+}
+
+/** Convertit un pas de grille (double-croche, [estimateGridMs]) en BPM équivalent, borné à une plage musicale raisonnable. */
+private fun bpmFromGridMs(gridMs: Double): Int {
+    val beatMs = gridMs * 4
+    return (60_000.0 / beatMs).toInt().coerceIn(40, 240)
 }
 
 class RecordingViewModel : ViewModel() {
@@ -170,17 +177,27 @@ class RecordingViewModel : ViewModel() {
     fun buildMidiFile(): ByteArray {
         val state = _uiState.value
         val originalNotes = state.completedNotes
-        val outputNotes = if (state.isQuantizeEnabled) {
-            quantize(originalNotes, bpm = MidiFileWriter.DEFAULT_BPM)
+
+        // Tempo du fichier MIDI exporté : celui détecté depuis la performance quand
+        // la quantification est active (pour que la grille soit visuellement alignée
+        // dans un DAW), sinon le tempo fixe par défaut.
+        val outputNotes: List<NoteEvent>
+        val bpm: Int
+        if (state.isQuantizeEnabled) {
+            val gridMs = estimateGridMs(originalNotes)
+            bpm = bpmFromGridMs(gridMs)
+            outputNotes = quantize(originalNotes, gridMs = gridMs)
         } else {
-            originalNotes
+            bpm = MidiFileWriter.DEFAULT_BPM
+            outputNotes = originalNotes
         }
+
         val pitchBends = if (state.isPitchBendEnabled) {
             buildPitchBendCurve(originalNotes, outputNotes, rawFrameLog)
         } else {
             emptyList()
         }
-        return MidiFileWriter().write(outputNotes, pitchBends)
+        return MidiFileWriter(beatsPerMinute = bpm).write(outputNotes, pitchBends)
     }
 
     override fun onCleared() {

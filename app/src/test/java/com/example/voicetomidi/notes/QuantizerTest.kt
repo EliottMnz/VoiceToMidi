@@ -60,4 +60,41 @@ class QuantizerTest {
     fun `an empty list stays empty`() {
         assertEquals(0, quantize(emptyList(), bpm).size)
     }
+
+    @Test
+    fun `estimateGridMs finds the median gap between note onsets`() {
+        // Onsets espacés de 200, 200, 600ms -> mediane = 200ms (le 600 est un outlier).
+        val notes = listOf(
+            NoteEvent(midiNote = 60, startTimeMs = 0, endTimeMs = 150, velocity = 90),
+            NoteEvent(midiNote = 62, startTimeMs = 200, endTimeMs = 350, velocity = 90),
+            NoteEvent(midiNote = 64, startTimeMs = 400, endTimeMs = 550, velocity = 90),
+            NoteEvent(midiNote = 65, startTimeMs = 1000, endTimeMs = 1150, velocity = 90)
+        )
+
+        assertEquals(200.0, estimateGridMs(notes), 0.01)
+    }
+
+    @Test
+    fun `estimateGridMs falls back to a default when there is not enough data`() {
+        assertEquals(125.0, estimateGridMs(emptyList()), 0.01)
+        assertEquals(125.0, estimateGridMs(listOf(NoteEvent(60, 0, 100, 90))), 0.01)
+    }
+
+    @Test
+    fun `quantizeAuto snaps notes to a grid derived from the actual performance`() {
+        // Chanté "vite" (gap de 100ms) : quantizeAuto doit suivre ce tempo, pas 120 BPM fixe.
+        val notes = listOf(
+            NoteEvent(midiNote = 60, startTimeMs = 5, endTimeMs = 95, velocity = 90),
+            NoteEvent(midiNote = 62, startTimeMs = 102, endTimeMs = 195, velocity = 90),
+            NoteEvent(midiNote = 64, startTimeMs = 198, endTimeMs = 290, velocity = 90)
+        )
+
+        val result = quantizeAuto(notes)
+
+        // Grille attendue ~100ms (médiane des écarts 97, 96) -> chaque note tombe sur un multiple de ~100ms.
+        result.forEach { note ->
+            val remainder = note.startTimeMs % 100
+            assertTrue("startTimeMs=${note.startTimeMs} pas proche d'un multiple de 100ms", remainder < 15 || remainder > 85)
+        }
+    }
 }

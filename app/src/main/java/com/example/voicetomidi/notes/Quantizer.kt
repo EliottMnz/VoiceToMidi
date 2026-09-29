@@ -1,20 +1,17 @@
 package com.example.voicetomidi.notes
 
 /**
- * Cale les notes sur une grille rythmique régulière (ex: doubles-croches à un
- * tempo donné), pour un rendu "propre" plutôt que les timings réels chantés.
+ * Cale les notes sur une grille temporelle régulière de pas [gridMs].
  * Transformation purement temporelle : ne change jamais les hauteurs ni les
  * vélocités.
  *
- * [divisionsPerBeat] = 4 correspond à une grille de doubles-croches (4 par
- * temps). Un arrondi indépendant du début et de la fin de chaque note peut
- * créer de légers chevauchements ou notes de durée nulle ; une passe de
- * nettoyage garantit ensuite une mélodie monophonique valide.
+ * Un arrondi indépendant du début et de la fin de chaque note peut créer de
+ * légers chevauchements ou notes de durée nulle ; une passe de nettoyage
+ * garantit ensuite une mélodie monophonique valide.
  */
-fun quantize(notes: List<NoteEvent>, bpm: Int, divisionsPerBeat: Int = 4): List<NoteEvent> {
+fun quantize(notes: List<NoteEvent>, gridMs: Double): List<NoteEvent> {
     if (notes.isEmpty()) return notes
 
-    val gridMs = 60_000.0 / bpm / divisionsPerBeat
     fun snap(timeMs: Long): Long = (Math.round(timeMs / gridMs) * gridMs).toLong()
 
     val snapped = notes.map { note ->
@@ -36,4 +33,39 @@ fun quantize(notes: List<NoteEvent>, bpm: Int, divisionsPerBeat: Int = 4): List<
     }
 
     return snapped
+}
+
+/** Grille dérivée d'un tempo fixe (BPM) — utile quand le tempo est connu à l'avance. */
+fun quantize(notes: List<NoteEvent>, bpm: Int, divisionsPerBeat: Int = 4): List<NoteEvent> =
+    quantize(notes, gridMs = 60_000.0 / bpm / divisionsPerBeat)
+
+/**
+ * Quantifie sur une grille dérivée de ce qui a été réellement chanté (médiane
+ * des écarts entre débuts de notes successives), plutôt qu'un tempo fixe
+ * arbitraire sans rapport avec la performance.
+ */
+fun quantizeAuto(notes: List<NoteEvent>): List<NoteEvent> = quantize(notes, gridMs = estimateGridMs(notes))
+
+/**
+ * Estime l'espacement rythmique typique entre les notes (médiane des
+ * intervalles entre débuts de notes consécutifs), utilisé comme pas de
+ * grille par [quantizeAuto].
+ *
+ * Limite assumée : ceci n'est PAS une vraie détection de tempo musical (BPM,
+ * position des temps forts) — juste l'espacement typique observé entre les
+ * notes. Une détection de pulsation fiable sur un chant a cappella sans
+ * métronome est un problème intrinsèquement ambigu (plusieurs tempos
+ * "plausibles" — le double, la moitié... — expliquent souvent aussi bien les
+ * mêmes données), donc cette estimation reste une approximation pragmatique,
+ * pas une vraie analyse rythmique.
+ */
+fun estimateGridMs(notes: List<NoteEvent>, fallbackMs: Double = 125.0): Double {
+    if (notes.size < 2) return fallbackMs
+
+    val onsets = notes.map { it.startTimeMs }.sorted()
+    val intervals = onsets.zipWithNext { a, b -> b - a }.filter { it > 0 }
+    if (intervals.isEmpty()) return fallbackMs
+
+    val sorted = intervals.sorted()
+    return sorted[sorted.size / 2].toDouble()
 }

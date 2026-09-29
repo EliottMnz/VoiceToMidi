@@ -163,7 +163,7 @@ fun RecordingScreen(
                 colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
             )
             Text(
-                "Quantifier (1/16 @ 120 BPM)",
+                "Quantifier (tempo détecté automatiquement)",
                 style = MaterialTheme.typography.bodyMedium
             )
         }
