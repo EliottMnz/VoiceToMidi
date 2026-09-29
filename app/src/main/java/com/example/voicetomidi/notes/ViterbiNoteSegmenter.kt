@@ -34,6 +34,14 @@ data class RawPitchFrame(
  * Comme Viterbi a besoin de voir toute la séquence pour décider, ce n'est
  * PAS utilisable en temps réel : on l'applique uniquement une fois
  * l'enregistrement terminé, sur l'historique complet des frames.
+ *
+ * Limite structurelle du modèle : rien n'empêche Viterbi de faire un très
+ * bref détour par un état si quelques frames y correspondent mieux (ex: une
+ * fenêtre d'analyse qui chevauche exactement une transition de pitch brutale
+ * peut mesurer une fréquence transitoire proche d'une note tierce). C'est
+ * exactement le problème que pYIN Notes documente et corrige par un élagage
+ * des notes trop courtes en post-traitement — [minNoteDurationMs] fait la
+ * même chose ici : toute note plus courte est fusionnée avec sa voisine.
  */
 class ViterbiNoteSegmenter(
     private val lowNote: Int = 33, // A1 — cohérent avec la plage du clavier affiché
@@ -42,6 +50,7 @@ class ViterbiNoteSegmenter(
     private val selfTransitionLogProb: Double = ln(0.965),
     private val silenceSelfTransitionLogProb: Double = ln(0.9),
     private val toOrFromSilenceLogProb: Double = ln(0.02),
+    private val minNoteDurationMs: Long = 60L,
     private val minAmplitudeForVelocity: Float = 0.01f,
     private val maxAmplitudeForVelocity: Float = 0.5f
 ) {
@@ -85,7 +94,33 @@ class ViterbiNoteSegmenter(
             path[t] = bestState
         }
 
-        return pathToNoteEvents(frames, path)
+        val prunedPath = pruneShortRuns(frames, path)
+        return pathToNoteEvents(frames, prunedPath)
+    }
+
+    /** Fusionne toute suite d'états plus courte que [minNoteDurationMs] avec l'état voisin. */
+    private fun pruneShortRuns(frames: List<RawPitchFrame>, path: IntArray): IntArray {
+        val result = path.copyOf()
+        var changed = true
+        while (changed) {
+            changed = false
+            var runStart = 0
+            var t = 1
+            while (t <= result.size) {
+                if (t == result.size || result[t] != result[runStart]) {
+                    val startMs = frames[runStart].timestampMs
+                    val endMs = if (t < frames.size) frames[t].timestampMs else frames.last().timestampMs + 1
+                    if (endMs - startMs < minNoteDurationMs) {
+                        val replacement = if (runStart > 0) result[runStart - 1] else result.getOrElse(t) { result[runStart] }
+                        for (k in runStart until t) result[k] = replacement
+                        changed = true
+                    }
+                    runStart = t
+                }
+                t++
+            }
+        }
+        return result
     }
 
     private fun stateEmission(frame: RawPitchFrame, state: Int): Double {

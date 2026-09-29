@@ -66,6 +66,25 @@ class ViterbiNoteSegmenterTest {
     }
 
     @Test
+    fun `a brief transient reading at a note boundary does not create a spurious short note`() {
+        // Reproduit le cas observé en pratique : une transition brutale entre deux notes
+        // (grand saut, sans glissement) fait qu'une ou deux fenêtres d'analyse chevauchent
+        // la jointure et mesurent une fréquence transitoire proche d'une note tierce.
+        val segmenter = ViterbiNoteSegmenter()
+        var t = 0L
+        val frames = mutableListOf<RawPitchFrame>()
+        repeat(40) { frames += frame(t, 64); t += frameDurationMs } // Mi4
+        repeat(2) { frames += frame(t, 65); t += frameDurationMs } // lecture parasite (20ms)
+        repeat(40) { frames += frame(t, 67); t += frameDurationMs } // Sol4
+
+        val events = segmenter.segment(frames)
+
+        assertEquals(2, events.size)
+        assertEquals(64, events[0].midiNote)
+        assertEquals(67, events[1].midiNote)
+    }
+
+    @Test
     fun `an empty frame list produces no notes`() {
         assertEquals(0, ViterbiNoteSegmenter().segment(emptyList()).size)
     }
