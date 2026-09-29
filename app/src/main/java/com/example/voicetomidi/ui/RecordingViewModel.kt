@@ -4,18 +4,24 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.voicetomidi.midi.MidiFileWriter
 import com.example.voicetomidi.notes.NoteEvent
+import com.example.voicetomidi.notes.RawPitchFrame
+import com.example.voicetomidi.notes.ViterbiNoteSegmenter
 import com.example.voicetomidi.notes.frequencyToMidiNote
 import com.example.voicetomidi.notes.midiNoteName
 import com.example.voicetomidi.pipeline.VoiceToMidiPipeline
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class RecordingUiState(
     val isRecording: Boolean = false,
+    /** Vrai brièvement après l'arrêt, pendant que le HMM/Viterbi recalcule les notes finales. */
+    val isRefining: Boolean = false,
     val currentNoteName: String? = null,
     val currentFrequencyHz: Float? = null,
     /** Note stabilisée par le NoteSegmenter (confirmée), pour un affichage visuel stable. */
@@ -39,15 +45,28 @@ class RecordingViewModel : ViewModel() {
     private val pipeline = VoiceToMidiPipeline()
     private var captureJob: Job? = null
 
+    // Historique brut de la session en cours, pour le raffinage HMM/Viterbi à l'arrêt.
+    // Voir NoteSegmenter (temps réel, hystérésis) vs ViterbiNoteSegmenter (post-traitement).
+    private val rawFrameLog = mutableListOf<RawPitchFrame>()
+
     private val _uiState = MutableStateFlow(RecordingUiState())
     val uiState: StateFlow<RecordingUiState> = _uiState.asStateFlow()
 
     fun startRecording() {
         if (captureJob != null) return
+        rawFrameLog.clear()
         _uiState.update { RecordingUiState(isRecording = true, completedNotes = it.completedNotes) }
 
         captureJob = viewModelScope.launch {
             pipeline.run().collect { frame ->
+                rawFrameLog.add(
+                    RawPitchFrame(
+                        timestampMs = frame.timestampMs,
+                        frequencyHz = frame.pitch.frequencyHz,
+                        confidence = frame.pitch.confidence,
+                        rmsAmplitude = frame.rmsAmplitude
+                    )
+                )
                 val voiced = frame.pitch.confidence > 0f
                 _uiState.update { current ->
                     current.copy(
@@ -60,15 +79,26 @@ class RecordingViewModel : ViewModel() {
                     )
                 }
             }
+
             _uiState.update {
                 it.copy(
                     isRecording = false,
+                    isRefining = true,
                     currentNoteName = null,
                     currentFrequencyHz = null,
                     currentTrackedMidiNote = null,
                     currentIntensity = 0f
                 )
             }
+
+            // Recalcule les notes finales hors-ligne (HMM/Viterbi sur toute la session) :
+            // remplace la liste temps réel par une version plus propre, utilisée aussi bien
+            // pour l'historique affiché que pour l'export MIDI.
+            val refinedNotes = withContext(Dispatchers.Default) {
+                ViterbiNoteSegmenter().segment(rawFrameLog)
+            }
+            _uiState.update { it.copy(isRefining = false, completedNotes = refinedNotes) }
+
             captureJob = null
         }
     }
@@ -78,6 +108,7 @@ class RecordingViewModel : ViewModel() {
     }
 
     fun clearNotes() {
+        rawFrameLog.clear()
         _uiState.update { it.copy(completedNotes = emptyList()) }
     }
 

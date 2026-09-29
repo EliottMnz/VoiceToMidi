@@ -93,25 +93,28 @@ fun RecordingScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             EmoButton(
                 text = if (uiState.isRecording) "Arrêter" else "Enregistrer",
-                onClick = { if (uiState.isRecording) viewModel.stopRecording() else viewModel.startRecording() }
+                onClick = { if (uiState.isRecording) viewModel.stopRecording() else viewModel.startRecording() },
+                enabled = !uiState.isRefining
             )
             EmoOutlinedButton(
                 text = "Effacer",
                 onClick = viewModel::clearNotes,
-                enabled = uiState.completedNotes.isNotEmpty()
+                enabled = uiState.completedNotes.isNotEmpty() && !uiState.isRefining
             )
             EmoOutlinedButton(
                 text = "Exporter",
                 onClick = { exportLauncher.launch("voicetomidi_${System.currentTimeMillis()}.mid") },
-                enabled = uiState.completedNotes.isNotEmpty() && !uiState.isRecording
+                enabled = uiState.completedNotes.isNotEmpty() && !uiState.isRecording && !uiState.isRefining
             )
         }
 
         Text(
-            text = uiState.currentNoteName?.let { name ->
-                val freq = uiState.currentFrequencyHz ?: 0f
-                "$name — ${"%.1f".format(freq)} Hz"
-            } ?: if (uiState.isRecording) "…" else "En attente",
+            text = when {
+                uiState.isRefining -> "Analyse en cours…"
+                uiState.currentNoteName != null -> "${uiState.currentNoteName} — ${"%.1f".format(uiState.currentFrequencyHz ?: 0f)} Hz"
+                uiState.isRecording -> "…"
+                else -> "En attente"
+            },
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

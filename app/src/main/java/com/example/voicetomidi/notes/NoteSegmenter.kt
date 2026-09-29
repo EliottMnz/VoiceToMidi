@@ -186,14 +186,8 @@ class NoteSegmenter(
             midiNote = tracking.note,
             startTimeMs = tracking.onsetTimeMs,
             endTimeMs = safeEnd,
-            velocity = amplitudeToVelocity(tracking.peakAmplitude)
+            velocity = amplitudeToVelocity(tracking.peakAmplitude, minAmplitudeForVelocity, maxAmplitudeForVelocity)
         )
-    }
-
-    private fun amplitudeToVelocity(rms: Float): Int {
-        val clamped = rms.coerceIn(minAmplitudeForVelocity, maxAmplitudeForVelocity)
-        val normalized = (clamped - minAmplitudeForVelocity) / (maxAmplitudeForVelocity - minAmplitudeForVelocity)
-        return (MIN_VELOCITY + normalized * (MAX_VELOCITY - MIN_VELOCITY)).roundToInt()
     }
 
     private fun median(values: Collection<Int>): Int {
@@ -206,10 +200,5 @@ class NoteSegmenter(
         if (rawNoteHistory.isEmpty()) return 0.0
         val window = rawNoteHistory.takeLast(windowFrames)
         return window.count { it == note }.toDouble() / window.size
-    }
-
-    companion object {
-        private const val MIN_VELOCITY = 40
-        private const val MAX_VELOCITY = 127
     }
 }
