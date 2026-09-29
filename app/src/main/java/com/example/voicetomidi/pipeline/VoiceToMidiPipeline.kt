@@ -1,6 +1,7 @@
 package com.example.voicetomidi.pipeline
 
 import com.example.voicetomidi.audio.AudioCaptureManager
+import com.example.voicetomidi.audio.AudioSource
 import com.example.voicetomidi.audio.toAnalysisWindows
 import com.example.voicetomidi.notes.NoteEvent
 import com.example.voicetomidi.notes.NoteSegmenter
@@ -35,11 +36,11 @@ data class LiveFrame(
  * récupérer les [NoteEvent] au fur et à mesure qu'ils se terminent.
  */
 class VoiceToMidiPipeline(
-    private val audioCaptureManager: AudioCaptureManager = AudioCaptureManager(),
+    private val audioSource: AudioSource = AudioCaptureManager(),
     private val windowSize: Int = WINDOW_SIZE,
     private val hopSize: Int = HOP_SIZE
 ) {
-    private val sampleRate get() = audioCaptureManager.sampleRate
+    private val sampleRate get() = audioSource.sampleRate
     private val pitchDetector = YinPitchDetector(sampleRate)
     private val hopDurationMs = hopSize * 1000.0 / sampleRate
 
@@ -54,7 +55,7 @@ class VoiceToMidiPipeline(
         var frameIndex = 0L
         var lastTimestampMs = 0L
 
-        audioCaptureManager.captureAudio()
+        audioSource.captureAudio()
             .toAnalysisWindows(windowSize, hopSize)
             .collect { window ->
                 val timestampMs = frameIndex * hopSize * 1000L / sampleRate
@@ -76,7 +77,7 @@ class VoiceToMidiPipeline(
     }.flowOn(Dispatchers.IO)
 
     /** Arrête la capture ; [run] se termine proprement après avoir clos la dernière note. */
-    fun stop() = audioCaptureManager.stop()
+    fun stop() = audioSource.stop()
 
     private fun rms(window: FloatArray): Float {
         var sumOfSquares = 0.0

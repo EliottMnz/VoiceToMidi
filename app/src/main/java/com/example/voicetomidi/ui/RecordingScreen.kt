@@ -83,19 +83,32 @@ fun RecordingScreen(
 
         if (!hasPermission) {
             Text(
-                "L'app a besoin du micro pour détecter les notes chantées.",
-                style = MaterialTheme.typography.bodyLarge
+                "Micro non autorisé — utilise le mode démo pour tester sans chanter, ou autorise le micro pour enregistrer ta voix.",
+                style = MaterialTheme.typography.bodyMedium
             )
-            EmoButton(text = "Autoriser le micro", onClick = { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO) })
-            return@Column
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            EmoButton(
-                text = if (uiState.isRecording) "Arrêter" else "Enregistrer",
-                onClick = { if (uiState.isRecording) viewModel.stopRecording() else viewModel.startRecording() },
-                enabled = !uiState.isRefining
+            if (hasPermission) {
+                EmoButton(
+                    text = if (uiState.isRecording) "Arrêter" else "Enregistrer",
+                    onClick = { if (uiState.isRecording) viewModel.stopRecording() else viewModel.startRecording() },
+                    enabled = !uiState.isRefining
+                )
+            } else {
+                EmoButton(
+                    text = "Autoriser le micro",
+                    onClick = { permissionLauncher.launch(Manifest.permission.RECORD_AUDIO) }
+                )
+            }
+            EmoOutlinedButton(
+                text = "Mode démo",
+                onClick = viewModel::startDemo,
+                enabled = !uiState.isRecording && !uiState.isRefining
             )
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             EmoOutlinedButton(
                 text = "Effacer",
                 onClick = viewModel::clearNotes,

@@ -18,14 +18,14 @@ import kotlinx.coroutines.isActive
  * dernière note en cours) avant que le flux ne se termine.
  */
 class AudioCaptureManager(
-    val sampleRate: Int = SAMPLE_RATE
-) {
+    override val sampleRate: Int = SAMPLE_RATE
+) : AudioSource {
 
     @Volatile
     private var isRecording = false
 
     @SuppressLint("MissingPermission")
-    fun captureAudio(): Flow<ShortArray> = flow {
+    override fun captureAudio(): Flow<ShortArray> = flow {
         val minBufferSize = AudioRecord.getMinBufferSize(
             sampleRate,
             AudioFormat.CHANNEL_IN_MONO,
@@ -64,7 +64,7 @@ class AudioCaptureManager(
     }
 
     /** Demande l'arrêt de la capture en cours ; le flux de [captureAudio] se termine normalement. */
-    fun stop() {
+    override fun stop() {
         isRecording = false
     }
 

@@ -2,6 +2,9 @@ package com.example.voicetomidi.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.voicetomidi.audio.AudioCaptureManager
+import com.example.voicetomidi.audio.AudioSource
+import com.example.voicetomidi.audio.SyntheticVoiceSource
 import com.example.voicetomidi.midi.MidiFileWriter
 import com.example.voicetomidi.notes.NoteEvent
 import com.example.voicetomidi.notes.RawPitchFrame
@@ -42,7 +45,7 @@ private fun amplitudeToIntensity(rms: Float): Float {
 
 class RecordingViewModel : ViewModel() {
 
-    private val pipeline = VoiceToMidiPipeline()
+    private var pipeline: VoiceToMidiPipeline? = null
     private var captureJob: Job? = null
 
     // Historique brut de la session en cours, pour le raffinage HMM/Viterbi à l'arrêt.
@@ -52,13 +55,25 @@ class RecordingViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(RecordingUiState())
     val uiState: StateFlow<RecordingUiState> = _uiState.asStateFlow()
 
-    fun startRecording() {
+    /** Capture réelle au micro (nécessite la permission RECORD_AUDIO). */
+    fun startRecording() = start(AudioCaptureManager())
+
+    /**
+     * Rejoue une mélodie générée à la place du micro — pour tester tout le
+     * pipeline (clavier, export) sans chanter, ex. dans un lieu où on ne peut
+     * pas faire de bruit. Aucune permission requise.
+     */
+    fun startDemo() = start(SyntheticVoiceSource())
+
+    private fun start(source: AudioSource) {
         if (captureJob != null) return
         rawFrameLog.clear()
+        val newPipeline = VoiceToMidiPipeline(audioSource = source)
+        pipeline = newPipeline
         _uiState.update { RecordingUiState(isRecording = true, completedNotes = it.completedNotes) }
 
         captureJob = viewModelScope.launch {
-            pipeline.run().collect { frame ->
+            newPipeline.run().collect { frame ->
                 rawFrameLog.add(
                     RawPitchFrame(
                         timestampMs = frame.timestampMs,
@@ -104,7 +119,7 @@ class RecordingViewModel : ViewModel() {
     }
 
     fun stopRecording() {
-        pipeline.stop()
+        pipeline?.stop()
     }
 
     fun clearNotes() {
@@ -115,7 +130,7 @@ class RecordingViewModel : ViewModel() {
     fun buildMidiFile(): ByteArray = MidiFileWriter().write(_uiState.value.completedNotes)
 
     override fun onCleared() {
-        pipeline.stop()
+        pipeline?.stop()
         super.onCleared()
     }
 }
