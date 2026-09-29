@@ -50,7 +50,22 @@ class AudioCaptureManager(
         isRecording = true
         try {
             audioRecord.startRecording()
+            check(audioRecord.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                "Le micro n'a pas pu démarrer (déjà utilisé par une autre application ?)"
+            }
+
             val buffer = ShortArray(bufferSize / 2)
+
+            // Ignore le tout début de la capture : le démarrage du matériel audio
+            // produit souvent un bref artefact/clic (observé en pratique sur des
+            // exports réels), avant que le signal ne se stabilise.
+            var warmupSamplesRemaining = sampleRate * WARMUP_MS / 1000
+            while (warmupSamplesRemaining > 0 && isRecording && currentCoroutineContext().isActive) {
+                val toRead = minOf(buffer.size, warmupSamplesRemaining)
+                val read = audioRecord.read(buffer, 0, toRead)
+                if (read > 0) warmupSamplesRemaining -= read
+            }
+
             while (isRecording && currentCoroutineContext().isActive) {
                 val read = audioRecord.read(buffer, 0, buffer.size)
                 if (read > 0) {
@@ -70,5 +85,6 @@ class AudioCaptureManager(
 
     companion object {
         const val SAMPLE_RATE = 44100
+        private const val WARMUP_MS = 100
     }
 }

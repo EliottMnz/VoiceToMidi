@@ -13,6 +13,7 @@ import com.example.voicetomidi.notes.ViterbiNoteSegmenter
 import com.example.voicetomidi.notes.frequencyToMidiNote
 import com.example.voicetomidi.notes.midiNoteName
 import com.example.voicetomidi.pipeline.VoiceToMidiPipeline
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,7 +33,9 @@ data class RecordingUiState(
     val currentTrackedMidiNote: Int? = null,
     /** Intensité normalisée [0, 1] de la note tenue, pour une jauge visuelle. */
     val currentIntensity: Float = 0f,
-    val completedNotes: List<NoteEvent> = emptyList()
+    val completedNotes: List<NoteEvent> = emptyList(),
+    /** Message si la capture a échoué (micro indisponible, etc.) ; effacé au prochain démarrage. */
+    val errorMessage: String? = null
 )
 
 /** Bornes d'amplitude RMS utilisées pour normaliser la jauge visuelle (cohérent avec NoteSegmenter). */
@@ -74,26 +77,34 @@ class RecordingViewModel : ViewModel() {
         _uiState.update { RecordingUiState(isRecording = true, completedNotes = it.completedNotes) }
 
         captureJob = viewModelScope.launch {
-            newPipeline.run().collect { frame ->
-                rawFrameLog.add(
-                    RawPitchFrame(
-                        timestampMs = frame.timestampMs,
-                        frequencyHz = frame.pitch.frequencyHz,
-                        confidence = frame.pitch.confidence,
-                        rmsAmplitude = frame.rmsAmplitude
+            try {
+                newPipeline.run().collect { frame ->
+                    rawFrameLog.add(
+                        RawPitchFrame(
+                            timestampMs = frame.timestampMs,
+                            frequencyHz = frame.pitch.frequencyHz,
+                            confidence = frame.pitch.confidence,
+                            rmsAmplitude = frame.rmsAmplitude
+                        )
                     )
-                )
-                val voiced = frame.pitch.confidence > 0f
-                _uiState.update { current ->
-                    current.copy(
-                        currentNoteName = if (voiced) midiNoteName(frequencyToMidiNote(frame.pitch.frequencyHz)) else null,
-                        currentFrequencyHz = if (voiced) frame.pitch.frequencyHz else null,
-                        currentTrackedMidiNote = frame.trackedNote,
-                        currentIntensity = if (frame.trackedNote != null) amplitudeToIntensity(frame.rmsAmplitude) else 0f,
-                        completedNotes = frame.completedNote?.let { current.completedNotes + it }
-                            ?: current.completedNotes
-                    )
+                    val voiced = frame.pitch.confidence > 0f
+                    _uiState.update { current ->
+                        current.copy(
+                            currentNoteName = if (voiced) midiNoteName(frequencyToMidiNote(frame.pitch.frequencyHz)) else null,
+                            currentFrequencyHz = if (voiced) frame.pitch.frequencyHz else null,
+                            currentTrackedMidiNote = frame.trackedNote,
+                            currentIntensity = if (frame.trackedNote != null) amplitudeToIntensity(frame.rmsAmplitude) else 0f,
+                            completedNotes = frame.completedNote?.let { current.completedNotes + it }
+                                ?: current.completedNotes
+                        )
+                    }
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Ex: AudioRecord indisponible (micro pris par une autre appli), erreur
+                // matérielle... On informe l'UI au lieu de laisser planter l'app.
+                _uiState.update { it.copy(errorMessage = e.message ?: "Erreur pendant la capture audio") }
             }
 
             _uiState.update {
@@ -111,7 +122,14 @@ class RecordingViewModel : ViewModel() {
             // remplace la liste temps réel par une version plus propre, utilisée aussi bien
             // pour l'historique affiché que pour l'export MIDI.
             val refinedNotes = withContext(Dispatchers.Default) {
-                ViterbiNoteSegmenter().segment(rawFrameLog)
+                try {
+                    ViterbiNoteSegmenter().segment(rawFrameLog)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    _uiState.update { it.copy(errorMessage = "Échec de l'analyse des notes : ${e.message}") }
+                    emptyList()
+                }
             }
             _uiState.update { it.copy(isRefining = false, completedNotes = refinedNotes) }
 
