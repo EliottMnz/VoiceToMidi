@@ -58,7 +58,9 @@ class NoteSegmenter(
     private val minOffsetMs: Double = 120.0,
     private val minConfidence: Float = 0.5f,
     private val minAmplitudeForVelocity: Float = 0.01f,
-    private val maxAmplitudeForVelocity: Float = 0.5f
+    private val maxAmplitudeForVelocity: Float = 0.5f,
+    /** Restreint les notes détectées à cette gamme (ex: moins de notes candidates -> moins d'ambiguïté). */
+    private val scaleConstraint: ScaleConstraint = NoScaleConstraint
 ) {
 
     private val smoothingWindowFrames = maxOf(1, (smoothingWindowMs / frameDurationMs).roundToInt())
@@ -95,7 +97,7 @@ class NoteSegmenter(
 
         silenceSinceMs = null
 
-        val rawNote = frequencyToMidiNote(pitch.frequencyHz)
+        val rawNote = scaleConstraint.nearestInScale(frequencyToMidiNote(pitch.frequencyHz))
         rawNoteHistory.addLast(rawNote)
         while (rawNoteHistory.size > smoothingWindowFrames) rawNoteHistory.removeFirst()
         val smoothedNote = median(rawNoteHistory)

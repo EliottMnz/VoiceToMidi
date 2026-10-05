@@ -42,6 +42,18 @@ data class RawPitchFrame(
  * exactement le problème que pYIN Notes documente et corrige par un élagage
  * des notes trop courtes en post-traitement — [minNoteDurationMs] fait la
  * même chose ici : toute note plus courte est fusionnée avec sa voisine.
+ *
+ * [scaleConstraint] restreint l'espace d'états aux notes de la gamme choisie
+ * (comme la fonction "Key" des plugins voix->MIDI du marché) : moins de
+ * notes candidates par octave, donc une note "fausse" est mécaniquement plus
+ * loin de la bonne — moins d'ambiguïté, sans rien changer à l'algorithme.
+ *
+ * [correctLeadingOctaveErrors] corrige un artefact classique de l'attaque
+ * vocale (avant que les cordes vocales ne se stabilisent, l'estimateur peut
+ * accrocher une harmonique au lieu du fondamental, donnant une fréquence
+ * environ une octave trop haute) : si la toute première note est brève et
+ * strictement à une ou deux octaves de la note suivante, elle est recalée
+ * sur la hauteur de cette dernière.
  */
 class ViterbiNoteSegmenter(
     private val lowNote: Int = 33, // A1 — cohérent avec la plage du clavier affiché
@@ -52,9 +64,12 @@ class ViterbiNoteSegmenter(
     private val toOrFromSilenceLogProb: Double = ln(0.02),
     private val minNoteDurationMs: Long = 60L,
     private val minAmplitudeForVelocity: Float = 0.01f,
-    private val maxAmplitudeForVelocity: Float = 0.5f
+    private val maxAmplitudeForVelocity: Float = 0.5f,
+    private val scaleConstraint: ScaleConstraint = NoScaleConstraint,
+    private val correctLeadingOctaveErrors: Boolean = true,
+    private val leadingArtifactMaxDurationMs: Long = 350L
 ) {
-    private val noteStates = (lowNote..highNote).toList()
+    private val noteStates = (lowNote..highNote).filter { scaleConstraint.contains(it) }
     private val stateCount = noteStates.size + 1
     private val silenceIndex = 0
 
@@ -95,7 +110,21 @@ class ViterbiNoteSegmenter(
         }
 
         val prunedPath = pruneShortRuns(frames, path)
-        return pathToNoteEvents(frames, prunedPath)
+        val events = pathToNoteEvents(frames, prunedPath)
+        return if (correctLeadingOctaveErrors) correctLeadingOctaveError(events) else events
+    }
+
+    /** Recale la toute première note sur la seconde si elle n'en est qu'un artefact d'octave bref. */
+    private fun correctLeadingOctaveError(events: List<NoteEvent>): List<NoteEvent> {
+        if (events.size < 2) return events
+        val first = events[0]
+        val second = events[1]
+        if (first.durationMs > leadingArtifactMaxDurationMs) return events
+
+        val semitoneDiff = first.midiNote - second.midiNote
+        if (semitoneDiff != 12 && semitoneDiff != 24) return events
+
+        return listOf(first.copy(midiNote = second.midiNote)) + events.drop(1)
     }
 
     /** Fusionne toute suite d'états plus courte que [minNoteDurationMs] avec l'état voisin. */

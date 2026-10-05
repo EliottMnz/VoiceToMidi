@@ -3,8 +3,10 @@ package com.example.voicetomidi.pipeline
 import com.example.voicetomidi.audio.AudioCaptureManager
 import com.example.voicetomidi.audio.AudioSource
 import com.example.voicetomidi.audio.toAnalysisWindows
+import com.example.voicetomidi.notes.NoScaleConstraint
 import com.example.voicetomidi.notes.NoteEvent
 import com.example.voicetomidi.notes.NoteSegmenter
+import com.example.voicetomidi.notes.ScaleConstraint
 import com.example.voicetomidi.pitch.PitchResult
 import com.example.voicetomidi.pitch.YinPitchDetector
 import kotlin.math.sqrt
@@ -37,6 +39,7 @@ data class LiveFrame(
  */
 class VoiceToMidiPipeline(
     private val audioSource: AudioSource = AudioCaptureManager(),
+    private val scaleConstraint: ScaleConstraint = NoScaleConstraint,
     private val windowSize: Int = WINDOW_SIZE,
     private val hopSize: Int = HOP_SIZE
 ) {
@@ -51,7 +54,7 @@ class VoiceToMidiPipeline(
      * sur le dispatcher de l'appelant.
      */
     fun run(): Flow<LiveFrame> = flow {
-        val segmenter = NoteSegmenter(frameDurationMs = hopDurationMs)
+        val segmenter = NoteSegmenter(frameDurationMs = hopDurationMs, scaleConstraint = scaleConstraint)
         var frameIndex = 0L
         var lastTimestampMs = 0L
 

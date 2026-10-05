@@ -8,8 +8,10 @@ import com.example.voicetomidi.audio.DemoScenario
 import com.example.voicetomidi.audio.MetronomeClicker
 import com.example.voicetomidi.audio.SyntheticVoiceSource
 import com.example.voicetomidi.midi.MidiFileWriter
+import com.example.voicetomidi.notes.NoScaleConstraint
 import com.example.voicetomidi.notes.NoteEvent
 import com.example.voicetomidi.notes.RawPitchFrame
+import com.example.voicetomidi.notes.ScaleConstraint
 import com.example.voicetomidi.notes.TapTempoEstimator
 import com.example.voicetomidi.notes.ViterbiNoteSegmenter
 import com.example.voicetomidi.notes.buildPitchBendCurve
@@ -50,7 +52,9 @@ data class RecordingUiState(
     val tapCount: Int = 0,
     val isMetronomePlaying: Boolean = false,
     /** Si vrai, [tapTempoBpm] remplace l'estimation automatique du tempo pour la quantification. */
-    val isTapTempoValidated: Boolean = false
+    val isTapTempoValidated: Boolean = false,
+    /** Gamme choisie avant l'enregistrement — restreint les notes candidates pour moins d'ambiguïté. */
+    val selectedScale: ScaleConstraint = NoScaleConstraint
 )
 
 /** Bornes d'amplitude RMS utilisées pour normaliser la jauge visuelle (cohérent avec NoteSegmenter). */
@@ -97,14 +101,16 @@ class RecordingViewModel : ViewModel() {
     private fun start(source: AudioSource) {
         if (captureJob != null) return
         rawFrameLog.clear()
-        val newPipeline = VoiceToMidiPipeline(audioSource = source)
+        val scale = _uiState.value.selectedScale
+        val newPipeline = VoiceToMidiPipeline(audioSource = source, scaleConstraint = scale)
         pipeline = newPipeline
         _uiState.update {
             RecordingUiState(
                 isRecording = true,
                 completedNotes = it.completedNotes,
                 isQuantizeEnabled = it.isQuantizeEnabled,
-                isPitchBendEnabled = it.isPitchBendEnabled
+                isPitchBendEnabled = it.isPitchBendEnabled,
+                selectedScale = it.selectedScale
             )
         }
 
@@ -155,7 +161,7 @@ class RecordingViewModel : ViewModel() {
             // pour l'historique affiché que pour l'export MIDI.
             val refinedNotes = withContext(Dispatchers.Default) {
                 try {
-                    ViterbiNoteSegmenter().segment(rawFrameLog)
+                    ViterbiNoteSegmenter(scaleConstraint = scale).segment(rawFrameLog)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -176,6 +182,12 @@ class RecordingViewModel : ViewModel() {
     fun clearNotes() {
         rawFrameLog.clear()
         _uiState.update { it.copy(completedNotes = emptyList()) }
+    }
+
+    /** Choisit la gamme à utiliser pour la prochaine prise — verrouillé pendant l'enregistrement. */
+    fun setScale(scale: ScaleConstraint) {
+        if (_uiState.value.isRecording) return
+        _uiState.update { it.copy(selectedScale = scale) }
     }
 
     fun toggleQuantize() {

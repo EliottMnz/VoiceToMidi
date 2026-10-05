@@ -40,7 +40,10 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.voicetomidi.audio.DemoScenario
+import com.example.voicetomidi.notes.Scale
+import com.example.voicetomidi.notes.ScaleConstraint
 import com.example.voicetomidi.notes.midiNoteName
+import com.example.voicetomidi.notes.pitchClassName
 import com.example.voicetomidi.ui.theme.EmoButton
 import com.example.voicetomidi.ui.theme.EmoOutlinedButton
 import java.io.IOException
@@ -55,6 +58,8 @@ fun RecordingScreen(
     var showHistory by remember { mutableStateOf(false) }
     var showDemoMenu by remember { mutableStateOf(false) }
     var showTapTempo by remember { mutableStateOf(false) }
+    var showRootMenu by remember { mutableStateOf(false) }
+    var showScaleMenu by remember { mutableStateOf(false) }
 
     var hasPermission by remember {
         mutableStateOf(
@@ -109,6 +114,50 @@ fun RecordingScreen(
                 "Micro non autorisé — utilise le mode démo pour tester sans chanter, ou autorise le micro pour enregistrer ta voix.",
                 style = MaterialTheme.typography.bodyMedium
             )
+        }
+
+        Text(
+            "Gamme (à choisir avant de chanter) :",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box {
+                EmoOutlinedButton(
+                    text = pitchClassName(uiState.selectedScale.rootPitchClass),
+                    onClick = { showRootMenu = true },
+                    enabled = !uiState.isRecording
+                )
+                DropdownMenu(expanded = showRootMenu, onDismissRequest = { showRootMenu = false }) {
+                    (0..11).forEach { pitchClass ->
+                        DropdownMenuItem(
+                            text = { Text(pitchClassName(pitchClass)) },
+                            onClick = {
+                                showRootMenu = false
+                                viewModel.setScale(ScaleConstraint(uiState.selectedScale.scale, pitchClass))
+                            }
+                        )
+                    }
+                }
+            }
+            Box {
+                EmoOutlinedButton(
+                    text = uiState.selectedScale.scale.displayName,
+                    onClick = { showScaleMenu = true },
+                    enabled = !uiState.isRecording
+                )
+                DropdownMenu(expanded = showScaleMenu, onDismissRequest = { showScaleMenu = false }) {
+                    Scale.entries.forEach { scale ->
+                        DropdownMenuItem(
+                            text = { Text(scale.displayName) },
+                            onClick = {
+                                showScaleMenu = false
+                                viewModel.setScale(ScaleConstraint(scale, uiState.selectedScale.rootPitchClass))
+                            }
+                        )
+                    }
+                }
+            }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

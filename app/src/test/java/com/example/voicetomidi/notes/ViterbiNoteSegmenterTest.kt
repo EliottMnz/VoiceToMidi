@@ -18,6 +18,11 @@ class ViterbiNoteSegmenterTest {
     private fun silentFrame(t: Long) =
         RawPitchFrame(timestampMs = t, frequencyHz = 0f, confidence = 0f, rmsAmplitude = 0f)
 
+    private fun frameAtCents(t: Long, baseNote: Int, cents: Double, confidence: Float = 0.9f, rms: Float = 0.2f): RawPitchFrame {
+        val freq = (midiToFrequency(baseNote) * 2.0.pow(cents / 1200.0)).toFloat()
+        return RawPitchFrame(timestampMs = t, frequencyHz = freq, confidence = confidence, rmsAmplitude = rms)
+    }
+
     @Test
     fun `a held note with scattered single-frame jitter yields a single note`() {
         val segmenter = ViterbiNoteSegmenter()
@@ -87,5 +92,64 @@ class ViterbiNoteSegmenterTest {
     @Test
     fun `an empty frame list produces no notes`() {
         assertEquals(0, ViterbiNoteSegmenter().segment(emptyList()).size)
+    }
+
+    @Test
+    fun `scale constraint keeps notes within the chosen scale`() {
+        val constraint = ScaleConstraint(Scale.MAJOR, rootPitchClass = 0) // Do majeur : pas de C#4 (61)
+        val segmenter = ViterbiNoteSegmenter(scaleConstraint = constraint)
+        var t = 0L
+        // Chanté un peu dièse par rapport à D4 (62) : doit résoudre vers D4, jamais vers C#4 qui n'existe pas dans la gamme.
+        val frames = (0 until 40).map { frameAtCents(t, baseNote = 62, cents = 25.0).also { t += frameDurationMs } }
+
+        val events = segmenter.segment(frames)
+
+        assertEquals(1, events.size)
+        assertEquals(62, events[0].midiNote)
+    }
+
+    @Test
+    fun `a brief octave-high blip at the very start is corrected to match the next note`() {
+        val segmenter = ViterbiNoteSegmenter()
+        var t = 0L
+        val frames = mutableListOf<RawPitchFrame>()
+        repeat(15) { frames += frame(t, 72); t += frameDurationMs } // Do5, artefact bref (150ms)
+        repeat(40) { frames += frame(t, 60); t += frameDurationMs } // Do4, la vraie note tenue
+
+        val events = segmenter.segment(frames)
+
+        assertEquals(2, events.size)
+        assertEquals(60, events[0].midiNote) // corrigé : plus de saut d'octave
+        assertEquals(60, events[1].midiNote)
+    }
+
+    @Test
+    fun `a sustained octave-high note at the start is not corrected if it lasts too long`() {
+        val segmenter = ViterbiNoteSegmenter()
+        var t = 0L
+        val frames = mutableListOf<RawPitchFrame>()
+        repeat(60) { frames += frame(t, 72); t += frameDurationMs } // Do5 tenu 600ms : note délibérée, pas un artefact
+        repeat(40) { frames += frame(t, 60); t += frameDurationMs } // Do4
+
+        val events = segmenter.segment(frames)
+
+        assertEquals(2, events.size)
+        assertEquals(72, events[0].midiNote) // pas corrigé : trop long pour être un artefact
+        assertEquals(60, events[1].midiNote)
+    }
+
+    @Test
+    fun `a brief leading note that is not an octave away is left untouched`() {
+        val segmenter = ViterbiNoteSegmenter()
+        var t = 0L
+        val frames = mutableListOf<RawPitchFrame>()
+        repeat(15) { frames += frame(t, 67); t += frameDurationMs } // Sol4, bref mais pas une octave de la suivante
+        repeat(40) { frames += frame(t, 60); t += frameDurationMs } // Do4
+
+        val events = segmenter.segment(frames)
+
+        assertEquals(2, events.size)
+        assertEquals(67, events[0].midiNote) // pas touché : pas une relation d'octave
+        assertEquals(60, events[1].midiNote)
     }
 }
