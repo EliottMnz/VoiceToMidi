@@ -56,6 +56,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.voicetomidi.audio.AudioFileDecoder
 import com.example.voicetomidi.audio.DemoScenario
+import com.example.voicetomidi.notes.Scale
+import com.example.voicetomidi.notes.ScaleConstraint
 import com.example.voicetomidi.notes.frenchNoteName
 import com.example.voicetomidi.ui.theme.EmoButton
 import com.example.voicetomidi.ui.theme.EmoOutlinedButton
@@ -223,6 +225,7 @@ fun RecordingScreen(
             Text(
                 text = when {
                     uiState.isRefining -> "Analyse en cours…"
+                    uiState.countInBeat != null -> "${uiState.countInBeat}…"
                     uiState.currentNoteName != null -> uiState.currentNoteName!!
                     uiState.isRecording -> "Chante !"
                     uiState.completedNotes.size == 1 -> "1 note"
@@ -270,7 +273,7 @@ fun RecordingScreen(
 
             if (showBpmDialog) {
                 ExportBpmDialog(
-                    initialBpm = uiState.tapTempoBpm.takeIf { uiState.isTapTempoValidated } ?: uiState.exportBpm,
+                    initialBpm = uiState.projectBpm ?: uiState.exportBpm,
                     onConfirm = { bpm ->
                         showBpmDialog = false
                         viewModel.setExportBpm(bpm)
@@ -328,93 +331,84 @@ fun RecordingScreen(
     }
 }
 
-/** Réglages d'export pour les utilisateurs avancés (quantification, vibrato, tempo). */
+/**
+ * Réglages facultatifs : tout marche sans y toucher. Le tempo et la gamme
+ * sont ceux du projet FL Studio, pour qui les connaît.
+ */
 @Composable
 private fun ExportOptions(uiState: RecordingUiState, viewModel: RecordingViewModel) {
-    var showTapTempo by remember { mutableStateOf(false) }
+    val idle = !uiState.isRecording && !uiState.isRefining
+    var bpmText by remember { mutableStateOf(uiState.projectBpm?.toString() ?: "") }
 
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(
-                checked = uiState.isPitchCorrectionEnabled,
-                onCheckedChange = { viewModel.togglePitchCorrection() },
-                enabled = !uiState.isRecording && !uiState.isRefining,
-                colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
-            )
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        OutlinedTextField(
+            value = bpmText,
+            onValueChange = { new ->
+                bpmText = new.filter { it.isDigit() }.take(3)
+                viewModel.setProjectBpm(bpmText.toIntOrNull()?.takeIf { it in MIN_EXPORT_BPM..MAX_EXPORT_BPM })
+            },
+            label = { Text("Tempo du projet (BPM, facultatif)") },
+            singleLine = true,
+            enabled = idle,
+            isError = bpmText.isNotEmpty() && uiState.projectBpm == null,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+
+        if (uiState.projectBpm != null) {
             Text(
-                "Rendre plus juste (si tu chantes entre deux notes)",
-                style = MaterialTheme.typography.bodyMedium
+                "$COUNT_IN_BEATS clics de décompte avant de chanter (mieux avec un casque).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            OptionCheckbox("Entendre le métronome pendant la prise", uiState.isMetronomeEnabled, idle, viewModel::toggleMetronome)
+            OptionCheckbox("Caler les notes sur le tempo (quantifier)", uiState.isQuantizeEnabled, true, viewModel::toggleQuantize)
         }
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(
-                checked = uiState.isQuantizeEnabled,
-                onCheckedChange = { viewModel.toggleQuantize() },
-                colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
-            )
-            Text(
-                "Caler les notes sur le tempo (quantifier)",
-                style = MaterialTheme.typography.bodyMedium
-            )
-        }
+        ScalePicker(selected = uiState.projectScale, enabled = idle, onSelect = viewModel::setProjectScale)
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(
-                checked = uiState.isPitchBendEnabled,
-                onCheckedChange = { viewModel.togglePitchBend() },
-                colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
-            )
-            Text(
-                "Vibrato (pitch bend)",
-                style = MaterialTheme.typography.bodyMedium
-            )
-        }
+        OptionCheckbox("Rendre plus juste (si tu chantes entre deux notes)", uiState.isPitchCorrectionEnabled, idle, viewModel::togglePitchCorrection)
+        OptionCheckbox("Vibrato (pitch bend)", uiState.isPitchBendEnabled, true, viewModel::togglePitchBend)
+    }
+}
 
-        TextButton(onClick = { showTapTempo = !showTapTempo }) {
+@Composable
+private fun OptionCheckbox(label: String, checked: Boolean, enabled: Boolean, onToggle: () -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(
+            checked = checked,
+            onCheckedChange = { onToggle() },
+            enabled = enabled,
+            colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
+        )
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+private val TONIC_NAMES = listOf("Do", "Do#", "Ré", "Mi♭", "Mi", "Fa", "Fa#", "Sol", "La♭", "La", "Si♭", "Si")
+
+private fun ScaleConstraint.frenchName() =
+    "${TONIC_NAMES[rootPitchClass]} ${if (scale == Scale.NATURAL_MINOR) "mineur" else "majeur"}"
+
+/** "Gamme de mon projet" : Automatique, ou l'une des 24 gammes majeures / mineures. */
+@Composable
+private fun ScalePicker(selected: ScaleConstraint?, enabled: Boolean, onSelect: (ScaleConstraint?) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    val choices = listOf(Scale.MAJOR, Scale.NATURAL_MINOR).flatMap { scale -> (0..11).map { ScaleConstraint(scale, it) } }
+    Box {
+        TextButton(onClick = { expanded = true }, enabled = enabled) {
             Text(
-                (if (uiState.isTapTempoValidated) {
-                    "Tempo tapé : ${uiState.tapTempoBpm} BPM (validé)"
-                } else {
-                    "Tempo (tap tempo)"
-                }).uppercase(),
+                "Gamme de mon projet : ${selected?.frenchName() ?: "automatique"}".uppercase(),
                 style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.primary
             )
         }
-
-        if (showTapTempo) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                EmoButton(text = "TAP", onClick = viewModel::onTap)
-
-                Text(
-                    uiState.tapTempoBpm?.let { bpm -> "$bpm BPM (${uiState.tapCount} tapotements)" }
-                        ?: "Tapote au moins 2 fois au rythme voulu",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    EmoOutlinedButton(
-                        text = if (uiState.isMetronomePlaying) "Arrêter" else "Écouter",
-                        onClick = {
-                            if (uiState.isMetronomePlaying) viewModel.stopTapTempoPreview() else viewModel.previewTapTempo()
-                        },
-                        enabled = uiState.tapTempoBpm != null
-                    )
-                    EmoOutlinedButton(
-                        text = "Valider",
-                        onClick = viewModel::validateTapTempo,
-                        enabled = uiState.tapTempoBpm != null && !uiState.isTapTempoValidated
-                    )
-                    EmoOutlinedButton(
-                        text = "Réinitialiser",
-                        onClick = viewModel::resetTapTempo,
-                        enabled = uiState.tapTempoBpm != null
-                    )
-                }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(text = { Text("Automatique") }, onClick = { expanded = false; onSelect(null) })
+            choices.forEach { choice ->
+                DropdownMenuItem(text = { Text(choice.frenchName()) }, onClick = { expanded = false; onSelect(choice) })
             }
         }
     }

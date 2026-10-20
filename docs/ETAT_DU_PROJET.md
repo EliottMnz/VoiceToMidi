@@ -1,6 +1,6 @@
 # VoiceToMidi — état du projet
 
-*Mis à jour le 13 octobre 2026 (après la relecture d'un agent externe et la refonte des mesures). Ce document s'adresse à un humain ou à un agent IA qui reprend le projet : il explique le but, ce qui existe, comment ça marche, comment c'est mesuré, et ce qui reste ouvert.*
+*Mis à jour le 20 octobre 2026 (prises réelles de l'auteur, refonte des options). Ce document s'adresse à un humain ou à un agent IA qui reprend le projet : il explique le but, ce qui existe, comment ça marche, comment c'est mesuré, et ce qui reste ouvert.*
 
 ---
 
@@ -20,7 +20,12 @@ Contraintes qui guident tous les choix :
 - **Gros bouton "maintiens pendant la note"** (facultatif) : l'utilisateur appuie au début de chaque note et relâche à la fin. Le premier appui lance l'enregistrement s'il n'a pas commencé.
 - **Analyse complète après l'arrêt** (pas en temps réel) : justesse, découpage en notes, tonalité, nettoyage.
 - **Import d'un fichier audio** (bouton « Importer ») : m4a du Dictaphone de l'iPhone, mp3, wav... décodés par `MediaExtractor`/`MediaCodec`, convertis en mono 44,1 kHz, puis analysés exactement comme une prise au micro. Permet de tester sa voix sans téléphone Android (enregistrer sur iPhone, glisser le fichier sur la fenêtre de l'émulateur, l'importer).
-- **Export MIDI** (SMF format 0). À l'export, l'appli demande **le BPM du projet FL Studio** (pré-rempli avec le tap tempo s'il a été validé) : le MIDI est écrit à ce tempo, donc les notes tombent au bon endroit à l'import. Options repliables : « Rendre plus juste » (voir 4.3 et 4.7), quantification sur les doubles-croches de ce tempo, pitch bend (vibrato), tap tempo.
+- **Export MIDI** (SMF format 0). À l'export, l'appli demande **le BPM du projet FL Studio** (pré-rempli avec le tempo du projet s'il a été donné) : le MIDI est écrit à ce tempo, donc les notes tombent au bon endroit à l'import.
+- **Options repliables, toutes facultatives** :
+  - **Tempo du projet (BPM)** : s'il est donné, chaque prise au micro commence par **4 clics de décompte** (`Metronome`), et le MIDI exporté commence sur le 1er temps qui suit. L'instant où chaque clic est *entendu* est connu par l'horloge du haut-parleur (`AudioTrack.getTimestamp`), et placé dans l'enregistrement par l'horloge du micro. Le clic est un bref bruit sans hauteur, pour que le micro ne le prenne pas pour une note. Avec un tempo seulement : « Entendre le métronome pendant la prise » et « Caler les notes sur le tempo » (quantification sur les doubles-croches). Sans tempo, pas de quantification : la grille ne tomberait pas sur les temps chantés.
+  - **Gamme de mon projet** (automatique par défaut, ou une des 24 gammes majeures / mineures) : chaque note est ramenée à la note de la gamme la plus proche (voir 5.5).
+  - **« Rendre plus juste »** (voir 4.3 et 4.7) et **pitch bend** (vibrato).
+  - Le tap tempo a été retiré (il ne servait qu'à pré-remplir le BPM).
 - **Mode démo** sans micro : des voix synthétiques, dont « Au clair de la lune » chanté par un débutant simulé (~30 s, chant 30 cents trop bas, fausses notes légères, hésitations). L'appli y retrouve les 33 notes exactes ; l'export ouvert dans FL Studio a été vérifié par l'auteur.
 - **Diagnostic des prises réelles** : chaque prise au micro est sauvegardée (WAV brut + appuis + notes + mesures frame par frame) dans le dossier `prises` de l'appli, les 10 dernières sont gardées. Sert à comprendre un résultat étrange après coup.
 - **Garde-fous de volume** : en dessous de ~-50 dBFS, le son est traité comme du silence (sinon YIN trouve des "notes" dans le bruit de fond) ; une prise entièrement trop faible affiche un message au lieu de notes.
@@ -46,7 +51,7 @@ app/src/main/java/com/example/voicetomidi/
 │               KeyDetector (tonalité)
 │               ViterbiNoteSegmenter (découpage HMM)
 │               NoteSegmenter (découpage temps réel, pour l'affichage en direct)
-│               Quantizer, TapTempoEstimator, PitchBendEvent, Scale, PitchMath
+│               Quantizer, PitchBendEvent, Scale, PitchMath
 ├── midi/       MidiFileWriter (écriture SMF à la main, javax.sound.midi n'existe pas sur Android)
 └── ui/         RecordingScreen, RecordingViewModel, SingingWidgets (bouton + courbe), thème
 
@@ -101,7 +106,8 @@ Problème : quelqu'un qui chante tout 40 cents trop bas a des intervalles justes
 0. **décalage systématique** : s'il existe un décalage (±400 ms) qui fait coïncider nettement plus d'appuis avec des événements de voix (débuts de son, changements de note) que l'absence de décalage, et qu'il dépasse 130 ms, tous les appuis sont décalés d'autant (corrélation, pas médiane : avec des notes courtes, l'événement le plus proche d'un appui en avance est souvent la note précédente). Sur la tablette de l'auteur, les appuis arrivaient ~250 ms avant la voix ; benchmark avec un doigt simulé 150-300 ms en avance : 0,36 → 0,70 ; doigt en retard de 40-120 ms : inchangé (0,73) ;
 1. si un début ou une fin de son (silence → voix, petits trous ≤ 60 ms comblés) se trouve à ±150 ms de l'appui, on s'y cale ;
 2. sinon (chant lié, sans silence entre les notes), on cherche **juste avant l'appui** le moment où la hauteur médiane change d'au moins 0,7 demi-ton : le doigt arrive presque toujours après la voix ;
-3. une note se termine au plus tard quand la suivante commence.
+3. une note se termine au plus tard quand la suivante commence ;
+4. ce qui est chanté à plus d'1 s de tout appui est découpé en automatique (Viterbi), au lieu d'être perdu : sur une prise de 40 s avec 3 appuis au début, 3 → 29 notes. Sans effet sur vocadito (les appuis simulés couvrent toutes les notes).
 
 Ce recalage sur le changement de hauteur a fait passer le mode bouton de 0,52 à 0,68 sur le benchmark.
 
@@ -135,7 +141,7 @@ En mode automatique, cet arbitrage est fait par le 2e passage Viterbi (pas de se
 
 ### 5.1 Tests automatiques
 
-- 88 tests JUnit sur PC (`./gradlew testDebugUnitTest`), dont 4 mesures sur vraies voix qui ne s'exécutent que si le jeu de données est fourni (voir 5.3). Ils couvrent YIN, Viterbi, le découpage temps réel, la justesse (décalage constant, dérive, bruit à ne pas prendre pour une dérive), la tonalité, l'analyseur (hésitations, notes répétées, appuis en retard, glissés, notes ambiguës, notes hors gamme volontaires, réglage par défaut et « Rendre plus juste »), le MIDI, et le pipeline complet sur chaque scénario de démo.
+- 84 tests JUnit sur PC (`./gradlew testDebugUnitTest`), dont 4 mesures sur vraies voix qui ne s'exécutent que si le jeu de données est fourni (voir 5.3). Ils couvrent YIN, Viterbi, le découpage temps réel, la justesse (décalage constant, dérive, bruit à ne pas prendre pour une dérive), la tonalité, l'analyseur (hésitations, notes répétées, appuis en retard, glissés, notes ambiguës, notes hors gamme volontaires, réglage par défaut et « Rendre plus juste »), le MIDI, le pipeline complet sur chaque scénario de démo, et les prises réelles de l'auteur (5.5).
 - 2 tests sur l'appareil (`./gradlew connectedDebugAndroidTest`, `AudioFileDecoderTest`) : le test fabrique un vrai m4a (AAC stéréo 48 kHz, comme le Dictaphone) et un wav, et vérifie que l'import les décode en mono 44,1 kHz avec la bonne durée et la bonne hauteur.
 - Validation synthétique (scénarios de démo, stress-tests) : utile pour vérifier que le code fait ce qu'on croit, mais **circulaire** (la voix simulée suit les hypothèses de l'algorithme). Elle ne prouve rien sur les vrais chanteurs.
 
@@ -159,20 +165,22 @@ En mode automatique, cet arbitrage est fait par le 2e passage Viterbi (pas de se
 |---|---|---|---|
 | Ancien algorithme (Viterbi seul) | 0,637 | 0,710 | 0,553 / 0,623 |
 | Auto (défaut) | 0,644 | 0,716 | 0,550 / 0,618 |
-| **Bouton (défaut)** | **0,715** | **0,749** | 0,603 / 0,668 |
+| **Bouton (défaut)** | **0,723** | **0,754** | 0,612 / 0,675 |
 | Auto + « Rendre plus juste » | 0,642 | 0,675 | 0,546 / 0,572 |
-| Bouton + « Rendre plus juste » | 0,684 | 0,694 | 0,576 / 0,614 |
+| Bouton + « Rendre plus juste » | 0,692 | 0,693 | 0,585 / 0,625 |
 | Annotateur A2 vs A1 (repère) | 0,757 | 0,817 | 0,718 / 0,766 |
 
-Gain du mode bouton sur l'ancien : [+0,052 ; +0,103] sur DEV (significatif), [−0,002 ; +0,074] sur TEST (10 extraits seulement, intervalle large). Mode auto : gain minime, à peine significatif sur DEV.
+Gain du mode bouton sur l'ancien : [+0,057 ; +0,113] sur DEV (significatif), [+0,010 ; +0,075] sur TEST (10 extraits seulement, intervalle large). Mode auto : gain minime, à peine significatif sur DEV.
 
-Décomposition (A1, % des notes de référence) :
+Décomposition (A1, % des notes de référence, mesurée le 20 octobre) :
 
 | | OK | début décalé | demi-ton | octave | fusionnée | autre hauteur | ratée | en trop | biais début |
 |---|---|---|---|---|---|---|---|---|---|
 | ancien | 65 % | 10 % | 6 % | 0,4 % | 4 % | 6 % | 8 % | 0,2 % | 0 ms |
 | auto | 66 % | 10 % | 7 % | 0,4 % | 4 % | 5 % | 8 % | 0 % | 0 ms |
-| bouton | 71 % | 7 % | **14 %** | 0,7 % | 0,5 % | 5 % | 3 % | 5 % | −17 ms |
+| bouton | 65 % | 6 % | **13 %** | 0,6 % | 1,7 % | 9 % | 5 % | 0 % | −17 ms |
+
+La version du 13 octobre de ce tableau donnait 71 % de notes OK en mode bouton : écart non expliqué (le F global, lui, a légèrement progressé), à vérifier.
 
 Ablation (DEV, réglage par défaut) : chaque étape du mode auto (porte de bruit, 2e passage, recollage/hésitations, séparation par volume) pèse moins d'un demi-point ; ajouter le calibrage coûte 2,3 points en mode bouton, ajouter l'arbitrage par la gamme 1,2 point.
 
@@ -183,8 +191,27 @@ Ablation (DEV, réglage par défaut) : chaque étape du mode auto (porte de brui
 3. **Les erreurs d'octave ne se distinguent pas des sauts d'octave voulus** (même durée, même confiance YIN). Elles ne pèsent qu'environ 1 % des notes. Aucune règle a posteriori n'a été ajoutée.
 4. **Le calibrage de justesse divise** : meilleur sur 4 extraits (ex. vocadito 37 : 0,69 → 0,78, chanteur visiblement entre deux notes), moins bon sur 7 (ex. vocadito 24 : 0,66 → 0,44). En moyenne il coûte, d'où le réglage par défaut « tel que chanté » et l'option.
 5. **Surapprentissage réel** : avant la séparation réglage/test, plusieurs étapes semblaient utiles sur les 40 extraits mais faisaient *moins bien* que l'ancien algorithme sur les 10 extraits mis de côté. Toute nouvelle idée doit être validée sur TEST.
-6. **Le bouton règle le découpage, pas la hauteur** : avec lui, presque plus de notes ratées ou fusionnées, mais les erreurs d'un demi-ton deviennent la première cause d'échec (14 %).
+6. **Le bouton règle le découpage, pas la hauteur** : avec lui, presque plus de notes ratées ou fusionnées, mais les erreurs d'un demi-ton deviennent la première cause d'échec (13 %).
 7. **Ce que vocadito ne peut pas mesurer** : l'intention (« fausse note de débutant », chanteur qui veut une note mais en chante une autre). L'annotation note ce qui est chanté. Les jeux « query by humming » (référence = partition) seraient l'outil idéal : MTG-QBH (CC BY 4.0) n'a pas les notes des chansons, et MIR-QBSH n'est plus téléchargeable (lien officiel en 404 en octobre 2026). Reste la voix de l'utilisateur, via l'import.
+
+### 5.5 Prises réelles de l'auteur (`MesPrisesTest`)
+
+Prises à la tablette, dans une pièce bruyante, avec le bouton, sur des chansons connues : 2 × Au clair de la lune, Joyeux anniversaire, Frère Jacques (45 notes). Seules les mesures (frames YIN, appuis) sont dans le dépôt (`app/src/test/resources/prises`), pas le son. Une note est juste si la *mélodie* l'est : alignement (plus longue sous-suite commune) avec la mélodie attendue, à la meilleure transposition près. C'est la seule mesure de l'intention disponible.
+
+| Réglage | Notes justes |
+|---|---|
+| Tel que chanté (défaut) | 26 / 45 |
+| « Rendre plus juste » | 29 / 45 |
+| Gamme imposée = celle où la voix chante (la moins bonne des 2 toniques plausibles) | 32 / 45 |
+| Meilleure des 12 gammes majeures, choisie après coup (borne, irréalisable) | 39 / 45 |
+
+Ce que ça apprend :
+
+1. La voix de l'auteur tombe à ±20-50 cents des notes, **sans décalage régulier** (concentration circulaire 0,1 à 0,3) : aucun recalage global ne peut corriger ça.
+2. **La gamme aide, mais à moitié** : une partie des notes est chantée franchement un demi-ton à côté, sur une note qui est *aussi* dans la gamme (ex. le « fa » de Frère Jacques chanté presque sur le « mi »).
+3. **Deviner la gamme sur la voix seule** est difficile quand chaque note est aussi incertaine : plusieurs gammes collent aussi bien.
+4. Le bruit fait perdre des notes (appuis où la voix n'est détectée que 5 à 30 % du temps).
+5. Contradiction avec vocadito (où « Rendre plus juste » coûte 3 points) : sur ces prises, il gagne 3 notes. vocadito note ce qui est chanté, ces prises ce qui était voulu. 4 prises seulement : indicatif.
 
 ## 6. Limites connues et problèmes ouverts
 
@@ -199,7 +226,7 @@ Ablation (DEV, réglage par défaut) : chaque étape du mode auto (porte de brui
 
 ## 7. Pistes pour la suite (à valider sur DEV **et** TEST)
 
-1. **Prises de l'auteur sur des mélodies connues** (Au clair de la lune, Frère Jacques...) via l'import : la seule mesure de l'intention disponible. 15 prises suffisent pour un premier signal. Comparer « tel que chanté » et « Rendre plus juste ».
+1. **Plus de prises de l'auteur sur des mélodies connues**, au calme et avec le métronome (5.5 n'en a que 4, dans le bruit). À ajouter dans `MesPrisesTest`.
 2. **Choix automatique du calibrage, prise par prise** : détecter quand une voix se tient durablement près de ±50 cents (cas où le calibrage aide, ex. vocadito 37) et ne l'activer que là.
 3. **Erreurs d'un demi-ton en mode bouton** : analyser les cas (où tombe la médiane, quelle part de la note est un glissé), essayer une médiane sur une fenêtre plus centrée, ou Viterbi contraint à une seule note par appui.
 4. **HMM avec durées** (sous-états attaque → stable, comme pYIN-notes) et émission pondérée par la stabilité de la hauteur (moins de faux Ré dans un glissé Do→Mi).

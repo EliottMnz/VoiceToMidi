@@ -9,7 +9,7 @@ import com.example.voicetomidi.audio.AudioSource
 import com.example.voicetomidi.audio.DecodedAudio
 import com.example.voicetomidi.audio.DemoScenario
 import com.example.voicetomidi.audio.FileAudioSource
-import com.example.voicetomidi.audio.MetronomeClicker
+import com.example.voicetomidi.audio.Metronome
 import com.example.voicetomidi.audio.SyntheticVoiceSource
 import com.example.voicetomidi.audio.TakeDiagnostics
 import com.example.voicetomidi.midi.MidiFileWriter
@@ -17,8 +17,8 @@ import com.example.voicetomidi.notes.AnalysisSteps
 import com.example.voicetomidi.notes.MelodyAnalyzer
 import com.example.voicetomidi.notes.NoteEvent
 import com.example.voicetomidi.notes.RawPitchFrame
+import com.example.voicetomidi.notes.ScaleConstraint
 import com.example.voicetomidi.notes.TapSegment
-import com.example.voicetomidi.notes.TapTempoEstimator
 import com.example.voicetomidi.notes.buildPitchBendCurve
 import com.example.voicetomidi.notes.frequencyToMidiNote
 import com.example.voicetomidi.notes.frenchNoteName
@@ -29,6 +29,7 @@ import com.example.voicetomidi.pipeline.VoiceToMidiPipeline
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,20 +51,26 @@ data class RecordingUiState(
     val completedNotes: List<NoteEvent> = emptyList(),
     /** Message si la capture a échoué (micro indisponible, etc.) ; effacé au prochain démarrage. */
     val errorMessage: String? = null,
-    /** Cale les notes sur une grille de doubles-croches à l'export, au lieu des timings réels. */
+    /**
+     * Tempo du projet FL Studio, s'il a été donné avant la prise. Il déclenche
+     * un décompte de [COUNT_IN_BEATS] clics avant de chanter, ce qui place les
+     * temps dans l'enregistrement : la quantification n'a de sens qu'avec lui.
+     */
+    val projectBpm: Int? = null,
+    /** Garde le métronome pendant toute la prise (sinon : décompte seul). */
+    val isMetronomeEnabled: Boolean = false,
+    /** Temps du décompte en cours (1 à [COUNT_IN_BEATS]), ou null hors décompte. */
+    val countInBeat: Int? = null,
+    /** Cale les notes sur les doubles-croches de [projectBpm] à l'export. */
     val isQuantizeEnabled: Boolean = false,
     /** Préserve le vibrato/l'imprécision de la voix à l'export via des messages MIDI Pitch Bend. */
     val isPitchBendEnabled: Boolean = false,
     /** Option "Rendre plus juste" : recentre une voix qui chante entre deux notes ou qui dérive. */
     val isPitchCorrectionEnabled: Boolean = false,
-    /** Tempo du projet FL Studio de l'utilisateur, écrit dans le MIDI exporté. */
+    /** Option "Gamme de mon projet" : null = automatique (rien d'imposé). */
+    val projectScale: ScaleConstraint? = null,
+    /** Tempo écrit dans le MIDI exporté (demandé à l'export, pré-rempli avec [projectBpm]). */
     val exportBpm: Int = MidiFileWriter.DEFAULT_BPM,
-    /** BPM calculé depuis les derniers tapotements (tap tempo), ou null si pas encore assez de données. */
-    val tapTempoBpm: Int? = null,
-    val tapCount: Int = 0,
-    val isMetronomePlaying: Boolean = false,
-    /** Si vrai, [tapTempoBpm] remplace l'estimation automatique du tempo pour la quantification. */
-    val isTapTempoValidated: Boolean = false,
     /** Vrai tant que l'utilisateur maintient le gros bouton "note". */
     val isHolding: Boolean = false,
     /** Nombre de notes marquées au bouton pendant la prise en cours. */
@@ -84,14 +91,18 @@ private const val TRAIL_MIN_CONFIDENCE = 0.5f
 /** Confiance minimale pour afficher la tonalité détectée à l'utilisateur. */
 private const val MIN_KEY_CONFIDENCE_TO_SHOW = 0.6
 
-private const val MIN_EXPORT_BPM = 40
-private const val MAX_EXPORT_BPM = 300
+const val MIN_EXPORT_BPM = 40
+const val MAX_EXPORT_BPM = 300
+
+/** Clics de décompte avant de chanter quand un tempo est donné. */
+const val COUNT_IN_BEATS = 4
 
 /** En dessous, un appui sur le bouton est un effleurement, pas une note. */
 private const val MIN_TAP_MS = 80L
 
 /** Rafraîchissement maximal de l'affichage en direct (~30 images/s). */
 private const val UI_REFRESH_MS = 33L
+private const val COUNT_IN_REFRESH_MS = 20L
 private const val LAG_TAG = "VoiceToMidiLag"
 
 private fun amplitudeToIntensity(rms: Float): Float {
@@ -150,9 +161,11 @@ class RecordingViewModel : ViewModel() {
     private var lastTakeFrames: List<RawPitchFrame> = emptyList()
     private var lastTakeTaps: List<TapSegment> = emptyList()
 
-    private val tapTempoEstimator = TapTempoEstimator()
-    private val metronome = MetronomeClicker()
-    private var metronomeJob: Job? = null
+    private var metronome: Metronome? = null
+
+    // Position du 1er temps après le décompte dans la dernière prise (ms) : le MIDI
+    // exporté commence là, sur le temps, et la quantification se cale dessus.
+    private var beatOriginMs = 0L
 
     /** Dossier où chaque prise au micro est sauvegardée (son brut + mesures), ou null pour ne rien garder. */
     var diagnosticsDir: File? = null
@@ -210,14 +223,34 @@ class RecordingViewModel : ViewModel() {
             RecordingUiState(
                 isRecording = true,
                 completedNotes = it.completedNotes,
+                projectBpm = it.projectBpm,
+                isMetronomeEnabled = it.isMetronomeEnabled,
                 isQuantizeEnabled = it.isQuantizeEnabled,
                 isPitchBendEnabled = it.isPitchBendEnabled,
                 isPitchCorrectionEnabled = it.isPitchCorrectionEnabled,
-                exportBpm = it.exportBpm,
-                tapTempoBpm = it.tapTempoBpm,
-                tapCount = it.tapCount,
-                isTapTempoValidated = it.isTapTempoValidated
+                projectScale = it.projectScale,
+                exportBpm = it.exportBpm
             )
+        }
+
+        // Tempo donné : décompte (et métronome si demandé), joué en même temps que le micro
+        // tourne. Seulement au micro : un fichier importé ou la démo ont leur propre rythme.
+        beatOriginMs = 0L
+        val bpm = _uiState.value.projectBpm
+        val click = if (bpm != null && source is AudioCaptureManager) Metronome() else null
+        metronome = click
+        if (click != null && bpm != null) {
+            val keepClicking = _uiState.value.isMetronomeEnabled
+            viewModelScope.launch(Dispatchers.Default) { click.play(bpm, COUNT_IN_BEATS, keepClicking) }
+            viewModelScope.launch {
+                while (metronome === click) {
+                    val beat = click.beatAt(System.nanoTime())
+                    if (beat >= COUNT_IN_BEATS) break
+                    _uiState.update { it.copy(countInBeat = if (beat < 0) null else COUNT_IN_BEATS - beat) }
+                    delay(COUNT_IN_REFRESH_MS)
+                }
+                _uiState.update { it.copy(countInBeat = null) }
+            }
         }
 
         captureJob = viewModelScope.launch {
@@ -290,11 +323,20 @@ class RecordingViewModel : ViewModel() {
             // Bouton encore maintenu au moment de l'arrêt : la note se termine là.
             closeHeldNote()
 
+            if (click != null) {
+                click.stop()
+                // Instant où le 1er temps après le décompte a été entendu, placé dans
+                // l'enregistrement par l'horloge du micro (les deux latences comprises).
+                beatOriginMs = source.audioPositionMsAt(click.beatNanoTime(COUNT_IN_BEATS))?.coerceAtLeast(0L) ?: 0L
+                metronome = null
+            }
+
             _uiState.update {
                 it.copy(
                     isRecording = false,
                     isRefining = true,
                     isHolding = false,
+                    countInBeat = null,
                     currentNoteName = null,
                     currentFrequencyHz = null,
                     currentTrackedMidiNote = null,
@@ -388,16 +430,26 @@ class RecordingViewModel : ViewModel() {
     }
 
     private fun analyzer() = MelodyAnalyzer(
-        steps = if (_uiState.value.isPitchCorrectionEnabled) AnalysisSteps.CORRECTED else AnalysisSteps.AS_SUNG
+        steps = if (_uiState.value.isPitchCorrectionEnabled) AnalysisSteps.CORRECTED else AnalysisSteps.AS_SUNG,
+        scale = _uiState.value.projectScale
     )
 
-    /**
-     * Active/désactive "Rendre plus juste" et ré-analyse aussitôt la dernière
-     * prise, pour comparer les deux résultats sans rechanter.
-     */
+    /** Active/désactive "Rendre plus juste" (la dernière prise est ré-analysée aussitôt). */
     fun togglePitchCorrection() {
         if (_uiState.value.isRecording || _uiState.value.isRefining) return
         _uiState.update { it.copy(isPitchCorrectionEnabled = !it.isPitchCorrectionEnabled) }
+        reanalyzeLastTake()
+    }
+
+    /** Choisit la gamme du projet (null = automatique) ; la dernière prise est ré-analysée aussitôt. */
+    fun setProjectScale(scale: ScaleConstraint?) {
+        if (_uiState.value.isRecording || _uiState.value.isRefining) return
+        _uiState.update { it.copy(projectScale = scale) }
+        reanalyzeLastTake()
+    }
+
+    /** Ré-analyse la dernière prise avec les options actuelles, pour comparer sans rechanter. */
+    private fun reanalyzeLastTake() {
         val frames = lastTakeFrames
         if (frames.isEmpty()) return
         val taps = lastTakeTaps
@@ -423,57 +475,40 @@ class RecordingViewModel : ViewModel() {
         _uiState.update { it.copy(isPitchBendEnabled = !it.isPitchBendEnabled) }
     }
 
-    /** Enregistre un tapotement au tempo voulu par l'utilisateur (tap tempo). */
-    fun onTap() {
-        val bpm = tapTempoEstimator.tap(System.currentTimeMillis())
+    /** Tempo du projet donné avant la prise (null = aucun : pas de décompte ni de quantification). */
+    fun setProjectBpm(bpm: Int?) {
         _uiState.update {
-            it.copy(tapTempoBpm = bpm, tapCount = tapTempoEstimator.tapCount(), isTapTempoValidated = false)
+            it.copy(
+                projectBpm = bpm,
+                exportBpm = bpm ?: it.exportBpm,
+                isMetronomeEnabled = it.isMetronomeEnabled && bpm != null,
+                isQuantizeEnabled = it.isQuantizeEnabled && bpm != null
+            )
         }
     }
 
-    /** Joue un clic de métronome au tempo tapé, pour le valider à l'oreille avant de l'utiliser. */
-    fun previewTapTempo() {
-        val bpm = _uiState.value.tapTempoBpm ?: return
-        metronomeJob?.cancel()
-        metronomeJob = viewModelScope.launch {
-            _uiState.update { it.copy(isMetronomePlaying = true) }
-            try {
-                metronome.play(bpm)
-            } finally {
-                _uiState.update { it.copy(isMetronomePlaying = false) }
-            }
-        }
-    }
-
-    fun stopTapTempoPreview() {
-        metronomeJob?.cancel()
-        metronomeJob = null
-        _uiState.update { it.copy(isMetronomePlaying = false) }
-    }
-
-    /** Confirme le tempo tapé : il remplacera l'estimation automatique pour la quantification. */
-    fun validateTapTempo() {
-        if (_uiState.value.tapTempoBpm != null) {
-            _uiState.update { it.copy(isTapTempoValidated = true) }
-        }
-    }
-
-    fun resetTapTempo() {
-        stopTapTempoPreview()
-        tapTempoEstimator.reset()
-        _uiState.update { it.copy(tapTempoBpm = null, tapCount = 0, isTapTempoValidated = false) }
+    fun toggleMetronome() {
+        _uiState.update { it.copy(isMetronomeEnabled = !it.isMetronomeEnabled && it.projectBpm != null) }
     }
 
     fun buildMidiFile(): ByteArray {
         val state = _uiState.value
-        val originalNotes = state.completedNotes
+
+        // Après un décompte, le MIDI commence sur le 1er temps : ce qui précède
+        // (le décompte) est coupé, et le reste est décalé d'autant.
+        val origin = beatOriginMs
+        val originalNotes = state.completedNotes.filter { it.endTimeMs > origin }
+        val alignedNotes = originalNotes.map {
+            it.copy(startTimeMs = (it.startTimeMs - origin).coerceAtLeast(0L), endTimeMs = it.endTimeMs - origin)
+        }
 
         // Le MIDI est écrit au tempo du projet de l'utilisateur : importé dans un
         // projet FL Studio à ce même tempo, chaque note tombe à son instant réel.
-        // (Un MIDI à 120 BPM importé dans un projet à 140 aurait un rythme faux.)
-        // La quantification, si elle est cochée, cale sur les doubles-croches de ce tempo.
+        // La quantification n'est proposée qu'avec un tempo donné avant la prise :
+        // sans décompte, la grille ne tomberait pas sur les temps chantés.
         val bpm = state.exportBpm
-        val outputNotes = if (state.isQuantizeEnabled) quantize(originalNotes, gridMs = 60_000.0 / bpm / 4) else originalNotes
+        val quantizeOn = state.isQuantizeEnabled && state.projectBpm != null
+        val outputNotes = if (quantizeOn) quantize(alignedNotes, gridMs = 60_000.0 / bpm / 4) else alignedNotes
 
         val pitchBends = if (state.isPitchBendEnabled) {
             buildPitchBendCurve(originalNotes, outputNotes, vibratoFrames)
@@ -485,7 +520,7 @@ class RecordingViewModel : ViewModel() {
 
     override fun onCleared() {
         pipeline?.stop()
-        metronome.release()
+        metronome?.stop()
         super.onCleared()
     }
 }
