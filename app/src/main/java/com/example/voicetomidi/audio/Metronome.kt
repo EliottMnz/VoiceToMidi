@@ -110,20 +110,22 @@ class Metronome(private val sampleRate: Int = 44100) {
         return ((nanoTime - first) * sampleRate / 1_000_000_000L / framesPerBeat).toInt()
     }
 
-    /** Un temps : clic de bruit à décroissance rapide, puis silence jusqu'au temps suivant. */
+    /** Un temps : le clic, puis silence jusqu'au temps suivant. */
     private fun beat(gain: Float): ShortArray {
-        val random = Random(42)
-        val clickFrames = sampleRate * CLICK_MS / 1000
-        return ShortArray(framesPerBeat) { i ->
-            if (i >= clickFrames) 0 else {
-                val envelope = exp(-i * 6.0 / clickFrames)
-                (random.nextFloat() * 2 - 1).times(gain * envelope.toFloat() * Short.MAX_VALUE).toInt().toShort()
-            }
-        }
+        val click = metronomeClick(sampleRate, gain)
+        return ShortArray(framesPerBeat) { i -> click.getOrElse(i) { 0f }.times(Short.MAX_VALUE).toInt().toShort() }
     }
 
     private companion object {
-        const val CLICK_MS = 15
         const val CLICK_GAIN = 0.8f
     }
+}
+
+private const val CLICK_MS = 15
+
+/** Le clic du métronome ([-1, 1]) : bruit à décroissance rapide, sans hauteur. Partagé avec les tests. */
+internal fun metronomeClick(sampleRate: Int, gain: Float): FloatArray {
+    val random = Random(42)
+    val clickFrames = sampleRate * CLICK_MS / 1000
+    return FloatArray(clickFrames) { i -> (random.nextFloat() * 2 - 1) * gain * exp(-i * 6.0 / clickFrames).toFloat() }
 }
