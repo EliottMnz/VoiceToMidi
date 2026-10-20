@@ -67,9 +67,16 @@ class ViterbiNoteSegmenter(
     private val maxAmplitudeForVelocity: Float = 0.5f,
     private val scaleConstraint: ScaleConstraint = NoScaleConstraint,
     private val correctLeadingOctaveErrors: Boolean = true,
-    private val leadingArtifactMaxDurationMs: Long = 350L
+    private val leadingArtifactMaxDurationMs: Long = 350L,
+    /**
+     * Coût (log-probabilité, <= 0) payé une fois en *entrant* dans une note,
+     * selon sa hauteur MIDI. Version douce de [scaleConstraint] : une note hors
+     * gamme reste possible, mais un bref détour par elle devient plus cher.
+     */
+    private val noteEntryLogPrior: (Int) -> Double = { 0.0 }
 ) {
     private val noteStates = (lowNote..highNote).filter { scaleConstraint.contains(it) }
+    private val entryLogPriors = DoubleArray(noteStates.size) { noteEntryLogPrior(noteStates[it]) }
     private val stateCount = noteStates.size + 1
     private val silenceIndex = 0
 
@@ -170,11 +177,10 @@ class ViterbiNoteSegmenter(
         if (from == to) {
             return if (from == silenceIndex) silenceSelfTransitionLogProb else selfTransitionLogProb
         }
-        if (from == silenceIndex || to == silenceIndex) {
-            return toOrFromSilenceLogProb
-        }
+        if (to == silenceIndex) return toOrFromSilenceLogProb
+        if (from == silenceIndex) return toOrFromSilenceLogProb + entryLogPriors[to - 1]
         val distance = abs(noteStates[from - 1] - noteStates[to - 1])
-        return ln(0.03) - 0.4 * distance
+        return ln(0.03) - 0.4 * distance + entryLogPriors[to - 1]
     }
 
     private fun pathToNoteEvents(frames: List<RawPitchFrame>, path: IntArray): List<NoteEvent> {

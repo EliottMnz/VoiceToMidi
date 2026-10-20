@@ -3,6 +3,7 @@ package com.example.voicetomidi.pipeline
 import com.example.voicetomidi.audio.AudioCaptureManager
 import com.example.voicetomidi.audio.AudioSource
 import com.example.voicetomidi.audio.toAnalysisWindows
+import com.example.voicetomidi.notes.MIN_VOICE_RMS
 import com.example.voicetomidi.notes.NoScaleConstraint
 import com.example.voicetomidi.notes.NoteEvent
 import com.example.voicetomidi.notes.NoteSegmenter
@@ -14,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.onEach
 
 /**
  * Un instantané du pipeline pour une fenêtre d'analyse donnée.
@@ -41,7 +43,9 @@ class VoiceToMidiPipeline(
     private val audioSource: AudioSource = AudioCaptureManager(),
     private val scaleConstraint: ScaleConstraint = NoScaleConstraint,
     private val windowSize: Int = WINDOW_SIZE,
-    private val hopSize: Int = HOP_SIZE
+    private val hopSize: Int = HOP_SIZE,
+    /** Reçoit chaque paquet brut lu à la source (ex: sauvegarde de diagnostic), sur le thread de capture. */
+    private val rawAudioSink: ((ShortArray) -> Unit)? = null
 ) {
     private val sampleRate get() = audioSource.sampleRate
     private val pitchDetector = YinPitchDetector(sampleRate)
@@ -59,13 +63,16 @@ class VoiceToMidiPipeline(
         var lastTimestampMs = 0L
 
         audioSource.captureAudio()
+            .onEach { chunk -> rawAudioSink?.invoke(chunk) }
             .toAnalysisWindows(windowSize, hopSize)
             .collect { window ->
                 val timestampMs = frameIndex * hopSize * 1000L / sampleRate
                 lastTimestampMs = timestampMs
 
                 val amplitude = rms(window)
-                val pitch = pitchDetector.detectPitch(window)
+                // Trop faible pour être une voix : YIN trouverait quand même une "note"
+                // dans un bourdonnement ou un bruit de fond (ex: micro de l'émulateur).
+                val pitch = if (amplitude < MIN_VOICE_RMS) PitchResult.Unvoiced else pitchDetector.detectPitch(window)
                 val completedNote = segmenter.processFrame(timestampMs, pitch, amplitude)
 
                 emit(LiveFrame(timestampMs, pitch, amplitude, segmenter.currentTrackedNote, completedNote))

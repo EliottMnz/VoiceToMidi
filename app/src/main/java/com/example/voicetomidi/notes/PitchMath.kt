@@ -24,3 +24,8 @@ fun midiNoteName(midiNote: Int): String {
     val name = NOTE_NAMES[((midiNote % 12) + 12) % 12]
     return "$name$octave"
 }
+
+private val FRENCH_NOTE_NAMES = arrayOf("Do", "Do#", "Ré", "Mi♭", "Mi", "Fa", "Fa#", "Sol", "La♭", "La", "Si♭", "Si")
+
+/** Notation française pour l'affichage (MIDI 60 = Do4), même numérotation d'octave que [midiNoteName]. */
+fun frenchNoteName(midiNote: Int): String = "${FRENCH_NOTE_NAMES[midiNote.mod(12)]}${midiNote / 12 - 1}"

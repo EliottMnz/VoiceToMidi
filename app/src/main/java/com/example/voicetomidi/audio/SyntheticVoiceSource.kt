@@ -25,6 +25,8 @@ class SyntheticVoiceSource(
     override val sampleRate: Int = AudioCaptureManager.SAMPLE_RATE
 ) : AudioSource {
 
+    override val playbackSpeed: Float get() = speedMultiplier
+
     @Volatile
     private var isPlaying = false
 
@@ -49,8 +51,9 @@ class SyntheticVoiceSource(
                         val tSec = (emitted + i).toDouble() / sampleRate
                         val vibratoCents = (drift * 0.6) * sin(2.0 * PI * 5.5 * tSec) // ~5.5Hz
                         val jitterCents = (random.nextDouble() - 0.5) * drift * 0.4
+                        val offsetCents = scenario.globalOffsetCents + note.detuneCents
                         val freq = midiNoteToFrequencyHz(note.midiNote) *
-                            Math.pow(2.0, (vibratoCents + jitterCents) / 1200.0)
+                            Math.pow(2.0, (vibratoCents + jitterCents + offsetCents) / 1200.0)
                         phase += 2.0 * PI * freq / sampleRate
                         buffer[i] = (sin(phase) * 0.3 * Short.MAX_VALUE).toInt().toShort()
                     }
