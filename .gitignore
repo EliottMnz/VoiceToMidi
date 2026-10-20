@@ -1,17 +1,27 @@
-*.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+# Gradle
+.gradle/
+build/
+.kotlin/
+
+# Chemin du SDK (propre à chaque machine)
 local.properties
 
-.kotlin
+# Android Studio / IntelliJ (régénéré à l'ouverture du projet)
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Fichiers compilés et clés de signature
+*.apk
+*.aab
+*.ap_
+*.dex
+*.jks
+*.keystore
+
+# Logs et fichiers système
+*.log
+.DS_Store
+Thumbs.db
