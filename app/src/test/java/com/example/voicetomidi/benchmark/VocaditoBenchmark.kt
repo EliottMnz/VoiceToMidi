@@ -175,7 +175,8 @@ class VocaditoBenchmark {
             "- recollage/hesitations" to default.copy(mergeAndHesitations = false),
             "- separation par volume" to default.copy(energySplit = false),
             "+ calibrage de justesse" to default.copy(tuning = true),
-            "+ arbitrage gamme (bouton)" to default.copy(keySnapWithTaps = true)
+            "+ arbitrage gamme (bouton)" to default.copy(keySnapWithTaps = true),
+            "- auto loin des appuis (bouton)" to default.copy(untappedFallback = false)
         )
         for ((name, steps) in variants) {
             val auto = excerpts.map { appScore(automatic(it, steps), it.a1) }.reduce(Score::plus)

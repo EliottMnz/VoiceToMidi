@@ -24,7 +24,9 @@ data class AnalysisSteps(
     val keyAwareSecondPass: Boolean = true,
     val mergeAndHesitations: Boolean = true,
     val energySplit: Boolean = true,
-    val keySnapWithTaps: Boolean = true
+    val keySnapWithTaps: Boolean = true,
+    /** En mode bouton, découpe aussi en automatique ce qui est chanté loin de tout appui. */
+    val untappedFallback: Boolean = true
 ) {
     companion object {
         /**
@@ -135,6 +137,14 @@ class MelodyAnalyzer(
      */
     private val relativeGateRatio: Float = 0.06f,
     private val steps: AnalysisSteps = AnalysisSteps.AS_SUNG,
+    /**
+     * Gamme choisie par l'utilisateur (option "Gamme de mon projet"), ou null.
+     * Contrairement à la gamme *devinée*, elle est certaine : chaque note est
+     * ramenée à la note de la gamme la plus proche. Mesuré sur les prises de
+     * l'auteur (voix qui tombe à ±40 cents d'une note sur l'autre) : c'est ce
+     * qui tranche le mieux entre deux demi-tons voisins (voir MesPrisesTest).
+     */
+    private val scale: ScaleConstraint? = null,
     internal val tapShift: Boolean = true,
     internal val tapSearchAfterMs: Long = 30L,
     internal val minTapShiftMs: Long = 130L,
@@ -156,27 +166,28 @@ class MelodyAnalyzer(
         val keys: KeyDistribution?
 
         if (taps.isNotEmpty()) {
-            val estimates = correctLeadingOctaveError(
-                refineTaps(taps, corrected)
-                    .filter { (start, end) -> end - start >= minTapNoteMs }
-                    .mapNotNull { (start, end) -> estimate(corrected, start, end, hint = null) }
-            )
+            val refined = refineTaps(taps, corrected).filter { (start, end) -> end - start >= minTapNoteMs }
+            val tapped = refined.mapNotNull { (start, end) -> estimate(corrected, start, end, hint = null) }
+            val untapped = if (steps.untappedFallback) notesFarFromTaps(corrected, refined) else emptyList()
+            val estimates = correctLeadingOctaveError((tapped + untapped).sortedBy { it.startMs })
             keys = if (estimates.isEmpty()) null else KeyDetector.detect(estimates.map(::weighted))
             finalEstimates = estimates
             finalNotes = when {
                 keys == null -> emptyList()
+                scale != null -> estimates.map { nearestInScale(it.semitones, scale) }
                 steps.keySnapWithTaps -> snap(estimates, keys)
                 else -> estimates.map { it.semitones.roundToInt() }
             }
         } else {
-            val firstPass = estimatesFromViterbi(corrected, ViterbiNoteSegmenter())
+            val firstPass = estimatesFromViterbi(corrected, scale?.let(::scaleSegmenter) ?: ViterbiNoteSegmenter())
             if (firstPass.isEmpty()) {
                 keys = null
                 finalEstimates = emptyList()
                 finalNotes = emptyList()
             } else {
                 val firstKeys = KeyDetector.detect(firstPass.map(::weighted))
-                val secondPass = if (!steps.keyAwareSecondPass) firstPass else estimatesFromViterbi(
+                // Gamme imposée : le 1er passage en a déjà tenu compte, pas besoin d'en deviner une.
+                val secondPass = if (!steps.keyAwareSecondPass || scale != null) firstPass else estimatesFromViterbi(
                     corrected,
                     ViterbiNoteSegmenter(noteEntryLogPrior = { note ->
                         viterbiKeyPriorScale * ln(firstKeys.pitchClassPrior(note.mod(12), outOfKeyWeight))
@@ -185,7 +196,7 @@ class MelodyAnalyzer(
                 keys = KeyDetector.detect(secondPass.map(::weighted))
                 // Le 2e passage Viterbi a déjà tenu compte de la gamme : son demi-ton est gardé tel
                 // quel (re-corriger chaque note derrière lui coûtait 2 points sur vocadito).
-                val viterbiNotes = secondPass.map { it.semitones.roundToInt() }
+                val viterbiNotes = secondPass.map { if (scale != null) nearestInScale(it.semitones, scale) else it.semitones.roundToInt() }
                 val cleaned = secondPass.zip(viterbiNotes).let { if (steps.mergeAndHesitations) absorbHesitations(mergeSameNoteNeighbors(it)) else it }
                 val merged = if (steps.energySplit) splitOnEnergyDips(cleaned, corrected) else cleaned
                 finalEstimates = merged.map { it.first }
@@ -404,6 +415,34 @@ class MelodyAnalyzer(
         }
     }
 
+    /**
+     * Notes chantées sans appui, loin de tout appui (ex : l'utilisateur a
+     * marqué les premières notes puis a continué sans le bouton). Sans ça,
+     * dès qu'il y avait un appui, tout le reste de la prise était perdu
+     * (constaté sur une prise de 40 s avec 4 appuis : 30 s de chant ignorées).
+     * Près des appuis, rien n'est ajouté : c'est l'utilisateur qui a dit où
+     * étaient ses notes.
+     */
+    private fun notesFarFromTaps(frames: List<RawPitchFrame>, taps: List<Pair<Long, Long>>): List<NoteEstimate> {
+        val masked = frames.map { frame ->
+            val nearTap = taps.any { (start, end) -> frame.timestampMs in (start - UNTAPPED_MARGIN_MS)..(end + UNTAPPED_MARGIN_MS) }
+            if (nearTap) frame.copy(frequencyHz = 0f, confidence = 0f) else frame
+        }
+        return estimatesFromViterbi(masked, scale?.let(::scaleSegmenter) ?: ViterbiNoteSegmenter())
+            .filter { it.durationMs >= UNTAPPED_MIN_NOTE_MS }
+    }
+
+    /** Note de [scale] la plus proche de la hauteur chantée (non arrondie). */
+    private fun nearestInScale(semitones: Double, scale: ScaleConstraint): Int {
+        val center = semitones.roundToInt()
+        return (center - 6..center + 6).filter(scale::contains).minBy { abs(it - semitones) }
+    }
+
+    /** Viterbi qui n'entre presque jamais dans une note hors de la gamme imposée. */
+    private fun scaleSegmenter(scale: ScaleConstraint) = ViterbiNoteSegmenter(noteEntryLogPrior = { note ->
+        if (scale.contains(note)) 0.0 else ln(OUT_OF_SCALE_ENTRY_WEIGHT)
+    })
+
     // --- Étape 6 : recollage et notes répétées ------------------------------------------------
 
     /**
@@ -520,6 +559,13 @@ class MelodyAnalyzer(
 }
 
 private const val MIN_PITCH_CHANGE_SEMITONES = 0.7
+
+/** En mode bouton, distance à tout appui au-delà de laquelle le chant est découpé en automatique. */
+private const val UNTAPPED_MARGIN_MS = 1000L
+private const val UNTAPPED_MIN_NOTE_MS = 120L
+
+/** Poids d'entrée dans une note hors de la gamme imposée (mode automatique). */
+private const val OUT_OF_SCALE_ENTRY_WEIGHT = 0.01
 
 /** Décalage systématique maximal cherché entre les appuis et la voix. */
 private const val MAX_TAP_SHIFT_MS = 400L
