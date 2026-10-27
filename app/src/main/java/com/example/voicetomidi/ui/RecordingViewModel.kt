@@ -78,7 +78,13 @@ data class RecordingUiState(
     /** Courbe de hauteur des [TRAIL_WINDOW_MS] dernières ms, pour l'affichage en direct. */
     val pitchTrail: List<TrailPoint> = emptyList(),
     /** Tonalité détectée sur la dernière prise (ex: "Do majeur"), ou null. */
-    val detectedKeyName: String? = null
+    val detectedKeyName: String? = null,
+    /**
+     * Courbe de toute la dernière prise, donnée une fois l'analyse finie : la
+     * courbe se dézoome alors pour montrer la mélodie en entier. Null pendant
+     * la prise, ou si rien n'a été chanté.
+     */
+    val takeTrail: List<TrailPoint>? = null
 )
 
 /** Bornes d'amplitude RMS utilisées pour normaliser la jauge visuelle (cohérent avec NoteSegmenter). */
@@ -104,6 +110,21 @@ private const val MIN_TAP_MS = 80L
 private const val UI_REFRESH_MS = 33L
 private const val COUNT_IN_REFRESH_MS = 20L
 private const val LAG_TAG = "VoiceToMidiLag"
+
+/** Point de courbe d'une frame : hauteur en demi-tons MIDI, ou null si la hauteur n'est pas fiable. */
+private fun trailPoint(timestampMs: Long, frequencyHz: Float, confidence: Float, isHeld: Boolean) = TrailPoint(
+    timestampMs = timestampMs,
+    semitones = if (confidence >= TRAIL_MIN_CONFIDENCE && frequencyHz > 0f) 69 + 12 * log2(frequencyHz / 440f) else null,
+    isHeld = isHeld
+)
+
+/** Courbe de toute une prise (pour la vue d'ensemble), ou null si aucune hauteur fiable. */
+private fun buildTakeTrail(frames: List<RawPitchFrame>, taps: List<TapSegment>): List<TrailPoint>? {
+    val points = frames.map { f ->
+        trailPoint(f.timestampMs, f.frequencyHz, f.confidence, isHeld = taps.any { f.timestampMs in it.startMs..it.endMs })
+    }
+    return points.takeIf { list -> list.any { it.semitones != null } }
+}
 
 private fun amplitudeToIntensity(rms: Float): Float {
     val clamped = rms.coerceIn(MIN_GAUGE_AMPLITUDE, MAX_GAUGE_AMPLITUDE)
@@ -277,14 +298,7 @@ class RecordingViewModel : ViewModel() {
                     val anchor = frame.timestampMs + clockWindowMs - SystemClock.elapsedRealtime() * clockSpeed.toDouble()
                     if (anchor > clockAnchorMs) clockAnchorMs = anchor
                     val voiced = frame.pitch.confidence > 0f
-                    val reliable = frame.pitch.confidence >= TRAIL_MIN_CONFIDENCE && frame.pitch.frequencyHz > 0f
-                    trail.addLast(
-                        TrailPoint(
-                            timestampMs = frame.timestampMs,
-                            semitones = if (reliable) 69 + 12 * log2(frame.pitch.frequencyHz / 440f) else null,
-                            isHeld = holdStartMs != null
-                        )
-                    )
+                    trail.addLast(trailPoint(frame.timestampMs, frame.pitch.frequencyHz, frame.pitch.confidence, isHeld = holdStartMs != null))
                     while (trail.first().timestampMs < frame.timestampMs - TRAIL_WINDOW_MS) trail.removeFirst()
 
                     val now = SystemClock.elapsedRealtime()
@@ -362,6 +376,7 @@ class RecordingViewModel : ViewModel() {
                 }
             }
             vibratoFrames = analysis?.vibratoFrames ?: emptyList()
+            val takeTrail = withContext(Dispatchers.Default) { buildTakeTrail(frames, taps) }
             val dir = diagnosticsDir
             if (takeDiagnostics != null && dir != null) {
                 withContext(Dispatchers.IO) {
@@ -376,6 +391,7 @@ class RecordingViewModel : ViewModel() {
                 it.copy(
                     isRefining = false,
                     completedNotes = analysis?.notes ?: emptyList(),
+                    takeTrail = takeTrail,
                     errorMessage = if (analysis?.inputTooQuiet == true) {
                         "Je n'ai rien entendu : le son capté est trop faible. Vérifie que le micro est bien actif et chante plus près."
                     } else {
@@ -422,7 +438,9 @@ class RecordingViewModel : ViewModel() {
     fun clearNotes() {
         rawFrameLog.clear()
         vibratoFrames = emptyList()
-        _uiState.update { it.copy(completedNotes = emptyList(), detectedKeyName = null, heldNoteCount = 0) }
+        _uiState.update {
+            it.copy(completedNotes = emptyList(), detectedKeyName = null, heldNoteCount = 0, pitchTrail = emptyList(), takeTrail = null)
+        }
     }
 
     fun toggleQuantize() {

@@ -20,19 +20,23 @@ private val EmoColorScheme = darkColorScheme(
     onSurface = EmoText,
     surfaceVariant = EmoSurfaceVariant,
     onSurfaceVariant = EmoTextMuted,
-    outline = EmoAccentDeep
+    surfaceContainerLow = EmoSurface,
+    surfaceContainer = EmoSurface,
+    surfaceContainerHigh = EmoSurfaceVariant,
+    outline = EmoSeparator,
+    outlineVariant = EmoSeparator
 )
 
-// Coins carrés partout (look flyer/affiche, pas de courbes).
+// Coins arrondis et doux : les cartes et boutons se lisent comme des blocs distincts.
 private val EmoShapes = Shapes(
-    extraSmall = RoundedCornerShape(0.dp),
-    small = RoundedCornerShape(0.dp),
-    medium = RoundedCornerShape(0.dp),
-    large = RoundedCornerShape(0.dp),
-    extraLarge = RoundedCornerShape(0.dp)
+    extraSmall = RoundedCornerShape(8.dp),
+    small = RoundedCornerShape(12.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(22.dp),
+    extraLarge = RoundedCornerShape(28.dp)
 )
 
-/** Identité visuelle unique de l'app : noir, rouge sang, anguleux. */
+/** Identité visuelle unique de l'app : noir, rouge sang, sobre. */
 @Composable
 fun VoiceToMidiTheme(content: @Composable () -> Unit) {
     MaterialTheme(

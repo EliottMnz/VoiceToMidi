@@ -11,29 +11,36 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -44,6 +51,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -56,13 +64,25 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.voicetomidi.audio.AudioFileDecoder
 import com.example.voicetomidi.audio.DemoScenario
+import com.example.voicetomidi.notes.NoteEvent
 import com.example.voicetomidi.notes.Scale
 import com.example.voicetomidi.notes.ScaleConstraint
 import com.example.voicetomidi.notes.frenchNoteName
 import com.example.voicetomidi.ui.theme.EmoButton
+import com.example.voicetomidi.ui.theme.EmoCard
 import com.example.voicetomidi.ui.theme.EmoOutlinedButton
+import com.example.voicetomidi.ui.theme.SettingsDivider
+import com.example.voicetomidi.ui.theme.SettingsSection
+import com.example.voicetomidi.ui.theme.SettingsSwitchRow
 import java.io.IOException
+import java.util.Locale
 
+/**
+ * Écran unique de l'appli, de haut en bas :
+ * titre + réglages, grand texte d'état, courbe de la voix, résultat de la
+ * prise (après l'arrêt), puis les commandes à portée de pouce : le pavé
+ * "maintiens pendant la note" et le bouton d'enregistrement.
+ */
 @Composable
 fun RecordingScreen(
     modifier: Modifier = Modifier,
@@ -71,9 +91,7 @@ fun RecordingScreen(
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
     viewModel.diagnosticsDir = context.getExternalFilesDir("prises")
-    var showHistory by remember { mutableStateOf(false) }
-    var showDemoMenu by remember { mutableStateOf(false) }
-    var showOptions by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
     var showBpmDialog by remember { mutableStateOf(false) }
 
     var hasPermission by remember {
@@ -139,168 +157,64 @@ fun RecordingScreen(
         }
     }
 
+    val idle = !uiState.isRecording && !uiState.isRefining
+    val hasResult = idle && uiState.completedNotes.isNotEmpty()
+
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(horizontal = 20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 12.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "VoiceToMidi",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = { showSettings = true }) {
+                Text("Réglages", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+
         Column(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Text(
-                "VOICE TO MIDI",
-                style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.primary
-            )
-
             if (!hasPermission) {
-                Text(
-                    if (permissionBlocked) {
-                        "Le micro est bloqué pour cette appli. Ouvre les réglages, puis Autorisations → Micro → Autoriser. (Tu peux aussi importer un audio ou lancer la démo.)"
-                    } else {
-                        "Micro non autorisé — autorise-le pour enregistrer ta voix, ou importe un audio / lance la démo."
-                    },
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                MicrophoneCard(blocked = permissionBlocked, onAllow = askForMicrophone)
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (hasPermission) {
-                    EmoButton(
-                        text = if (uiState.isRecording) "Arrêter" else "Enregistrer",
-                        onClick = { if (uiState.isRecording) viewModel.stopRecording() else viewModel.startRecording() },
-                        enabled = !uiState.isRefining
-                    )
-                } else {
-                    EmoButton(
-                        text = if (permissionBlocked) "Ouvrir les réglages" else "Autoriser le micro",
-                        onClick = askForMicrophone
-                    )
-                }
-                EmoOutlinedButton(
-                    text = "Importer",
-                    onClick = { importLauncher.launch(arrayOf("audio/*")) },
-                    enabled = !uiState.isRecording && !uiState.isRefining
-                )
-                Box {
-                    EmoOutlinedButton(
-                        text = "Démo",
-                        onClick = { showDemoMenu = true },
-                        enabled = !uiState.isRecording && !uiState.isRefining
-                    )
-                    DropdownMenu(expanded = showDemoMenu, onDismissRequest = { showDemoMenu = false }) {
-                        DemoScenario.entries.forEach { scenario ->
-                            DropdownMenuItem(
-                                text = { Text(scenario.displayName) },
-                                onClick = {
-                                    showDemoMenu = false
-                                    viewModel.startDemo(scenario)
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                EmoOutlinedButton(
-                    text = "Effacer",
-                    onClick = viewModel::clearNotes,
-                    enabled = uiState.completedNotes.isNotEmpty() && !uiState.isRefining
-                )
-                EmoOutlinedButton(
-                    text = "Exporter",
-                    onClick = { showBpmDialog = true },
-                    enabled = uiState.completedNotes.isNotEmpty() && !uiState.isRecording && !uiState.isRefining
-                )
-            }
-
-            Text(
-                text = when {
-                    uiState.isRefining -> "Analyse en cours…"
-                    uiState.countInBeat != null -> "${uiState.countInBeat}…"
-                    uiState.currentNoteName != null -> uiState.currentNoteName!!
-                    uiState.isRecording -> "Chante !"
-                    uiState.completedNotes.size == 1 -> "1 note"
-                    uiState.completedNotes.isNotEmpty() -> "${uiState.completedNotes.size} notes"
-                    else -> "En attente"
-                },
-                style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            StatusHeader(uiState)
 
             PitchTrail(
                 points = uiState.pitchTrail,
+                takeTrail = uiState.takeTrail,
+                notes = uiState.completedNotes,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(280.dp)
+                    .height(240.dp)
+                    .clip(MaterialTheme.shapes.large)
             )
 
-            if (!uiState.isRecording && !uiState.isRefining && uiState.detectedKeyName != null) {
-                Text(
-                    "Tonalité détectée : ${uiState.detectedKeyName}",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+            uiState.errorMessage?.let { message -> ErrorCard(message) }
+
+            AnimatedVisibility(visible = hasResult, enter = fadeIn(), exit = fadeOut()) {
+                ResultCard(
+                    notes = uiState.completedNotes,
+                    onExport = { showBpmDialog = true },
+                    onClear = viewModel::clearNotes
                 )
-            }
-
-            uiState.errorMessage?.let { message ->
-                Text(
-                    message,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            TextButton(onClick = { showOptions = !showOptions }) {
-                Text(
-                    (if (showOptions) "Masquer les options" else "Options").uppercase(),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            if (showOptions) {
-                ExportOptions(uiState = uiState, viewModel = viewModel)
-            }
-
-            if (showBpmDialog) {
-                ExportBpmDialog(
-                    initialBpm = uiState.projectBpm ?: uiState.exportBpm,
-                    onConfirm = { bpm ->
-                        showBpmDialog = false
-                        viewModel.setExportBpm(bpm)
-                        exportLauncher.launch("voicetomidi_${System.currentTimeMillis()}.mid")
-                    },
-                    onDismiss = { showBpmDialog = false }
-                )
-            }
-
-            TextButton(onClick = { showHistory = !showHistory }) {
-                Text(
-                    (if (showHistory) "Masquer l'historique (${uiState.completedNotes.size})" else "Historique (${uiState.completedNotes.size})")
-                        .uppercase(),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-
-            if (showHistory) {
-                LazyColumn(modifier = Modifier.heightIn(max = 160.dp)) {
-                    items(uiState.completedNotes.reversed()) { note ->
-                        Text(
-                            "${frenchNoteName(note.midiNote)} — ${note.durationMs} ms — vélocité ${note.velocity}",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                }
             }
         }
 
@@ -314,16 +228,84 @@ fun RecordingScreen(
                     askForMicrophone()
                 }
             },
-            onPressEnd = viewModel::onHoldEnd
+            onPressEnd = viewModel::onHoldEnd,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 12.dp)
+                .height(104.dp)
         )
 
-        Text(
-            text = when {
-                uiState.isRecording && uiState.heldNoteCount == 1 -> "1 note marquée"
-                uiState.isRecording && uiState.heldNoteCount > 0 -> "${uiState.heldNoteCount} notes marquées"
-                uiState.isRecording -> "Maintiens le bouton pendant chaque note (facultatif)"
-                else -> "Appuie et chante — ou lance l'enregistrement et chante librement"
+        BottomControls(
+            isRecording = uiState.isRecording,
+            idle = idle,
+            enabled = !uiState.isRefining,
+            onRecord = {
+                when {
+                    uiState.isRecording -> viewModel.stopRecording()
+                    hasPermission -> viewModel.startRecording()
+                    else -> askForMicrophone()
+                }
             },
+            onImport = { importLauncher.launch(arrayOf("audio/*")) },
+            onDemo = viewModel::startDemo
+        )
+    }
+
+    if (showSettings) {
+        SettingsSheet(uiState = uiState, viewModel = viewModel, onDismiss = { showSettings = false })
+    }
+
+    if (showBpmDialog) {
+        ExportBpmDialog(
+            initialBpm = uiState.projectBpm ?: uiState.exportBpm,
+            onConfirm = { bpm ->
+                showBpmDialog = false
+                viewModel.setExportBpm(bpm)
+                exportLauncher.launch("voicetomidi_${System.currentTimeMillis()}.mid")
+            },
+            onDismiss = { showBpmDialog = false }
+        )
+    }
+}
+
+/** Grand texte d'état + une phrase qui dit quoi faire maintenant. */
+@Composable
+private fun StatusHeader(uiState: RecordingUiState) {
+    val notes = uiState.completedNotes.size
+    val title = when {
+        uiState.isRefining -> "Analyse…"
+        uiState.countInBeat != null -> "${uiState.countInBeat}"
+        uiState.isRecording && uiState.currentNoteName != null -> uiState.currentNoteName!!
+        uiState.isRecording -> "Chante"
+        notes == 1 -> "1 note"
+        notes > 0 -> "$notes notes"
+        else -> "Prêt"
+    }
+    val subtitle = when {
+        uiState.isRefining -> "Je cherche tes notes, quelques secondes."
+        uiState.countInBeat != null -> "Écoute le décompte, chante après le dernier clic."
+        uiState.isRecording && uiState.heldNoteCount == 1 -> "1 note marquée · touche ■ pour arrêter"
+        uiState.isRecording && uiState.heldNoteCount > 0 -> "${uiState.heldNoteCount} notes marquées · touche ■ pour arrêter"
+        uiState.isRecording -> "Chante librement, ou maintiens le pavé pendant chaque note."
+        notes > 0 && uiState.detectedKeyName != null -> "Tonalité : ${uiState.detectedKeyName}"
+        notes > 0 -> "Ta prise est prête."
+        else -> "Touche le bouton rouge et chante ta mélodie."
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.displayMedium,
+            color = if (uiState.isRecording) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
+            textAlign = TextAlign.Center
+        )
+        Text(
+            subtitle,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
@@ -331,59 +313,247 @@ fun RecordingScreen(
     }
 }
 
-/**
- * Réglages facultatifs : tout marche sans y toucher. Le tempo et la gamme
- * sont ceux du projet FL Studio, pour qui les connaît.
- */
+/** Ce qu'on peut faire de la prise : l'exporter (action principale), voir les notes, recommencer. */
 @Composable
-private fun ExportOptions(uiState: RecordingUiState, viewModel: RecordingViewModel) {
-    val idle = !uiState.isRecording && !uiState.isRefining
-    var bpmText by remember { mutableStateOf(uiState.projectBpm?.toString() ?: "") }
-
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        OutlinedTextField(
-            value = bpmText,
-            onValueChange = { new ->
-                bpmText = new.filter { it.isDigit() }.take(3)
-                viewModel.setProjectBpm(bpmText.toIntOrNull()?.takeIf { it in MIN_EXPORT_BPM..MAX_EXPORT_BPM })
-            },
-            label = { Text("Tempo du projet (BPM, facultatif)") },
-            singleLine = true,
-            enabled = idle,
-            isError = bpmText.isNotEmpty() && uiState.projectBpm == null,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-        )
-
-        if (uiState.projectBpm != null) {
-            Text(
-                "$COUNT_IN_BEATS clics de décompte avant de chanter (mieux avec un casque).",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+private fun ResultCard(notes: List<NoteEvent>, onExport: () -> Unit, onClear: () -> Unit) {
+    var showNotes by remember { mutableStateOf(false) }
+    EmoCard {
+        EmoButton(text = "Exporter en MIDI", onClick = onExport, modifier = Modifier.fillMaxWidth())
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            EmoOutlinedButton(
+                text = if (showNotes) "Masquer les notes" else "Voir les notes",
+                onClick = { showNotes = !showNotes },
+                modifier = Modifier.weight(1f)
             )
-            OptionCheckbox("Entendre le métronome pendant la prise", uiState.isMetronomeEnabled, idle, viewModel::toggleMetronome)
-            OptionCheckbox("Caler les notes sur le tempo (quantifier)", uiState.isQuantizeEnabled, true, viewModel::toggleQuantize)
+            EmoOutlinedButton(text = "Effacer", onClick = onClear, modifier = Modifier.weight(1f))
         }
+        if (showNotes) {
+            Column {
+                notes.forEachIndexed { index, note ->
+                    if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "${index + 1}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(end = 12.dp)
+                        )
+                        Text(
+                            frenchNoteName(note.midiNote),
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            String.format(Locale.FRENCH, "%.2f s", note.durationMs / 1000.0),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
 
-        ScalePicker(selected = uiState.projectScale, enabled = idle, onSelect = viewModel::setProjectScale)
-
-        OptionCheckbox("Rendre plus juste (si tu chantes entre deux notes)", uiState.isPitchCorrectionEnabled, idle, viewModel::togglePitchCorrection)
-        OptionCheckbox("Vibrato (pitch bend)", uiState.isPitchBendEnabled, true, viewModel::togglePitchBend)
+/** Le micro n'est pas autorisé : on explique pourquoi et on propose de le faire. */
+@Composable
+private fun MicrophoneCard(blocked: Boolean, onAllow: () -> Unit) {
+    EmoCard {
+        Text("Micro désactivé", style = MaterialTheme.typography.titleMedium)
+        Text(
+            if (blocked) {
+                "Le micro est bloqué pour cette appli. Dans les réglages : Autorisations → Micro → Autoriser."
+            } else {
+                "Autorise le micro pour enregistrer ta voix. Sans micro, tu peux importer un audio ou essayer la démo."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        EmoButton(
+            text = if (blocked) "Ouvrir les réglages" else "Autoriser le micro",
+            onClick = onAllow,
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 }
 
 @Composable
-private fun OptionCheckbox(label: String, checked: Boolean, enabled: Boolean, onToggle: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Checkbox(
-            checked = checked,
-            onCheckedChange = { onToggle() },
-            enabled = enabled,
-            colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
-        )
-        Text(label, style = MaterialTheme.typography.bodyMedium)
+private fun ErrorCard(message: String) {
+    Text(
+        message,
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f))
+            .padding(16.dp)
+    )
+}
+
+/** Bas de l'écran, façon appareil photo : Importer · bouton d'enregistrement · Démo. */
+@Composable
+private fun BottomControls(
+    isRecording: Boolean,
+    idle: Boolean,
+    enabled: Boolean,
+    onRecord: () -> Unit,
+    onImport: () -> Unit,
+    onDemo: (DemoScenario) -> Unit
+) {
+    var showDemoMenu by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 16.dp, bottom = 20.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+            SideAction("Importer", enabled = idle, onClick = onImport)
+        }
+        RecordButton(isRecording = isRecording, enabled = enabled, onClick = onRecord)
+        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+            SideAction("Démo", enabled = idle, onClick = { showDemoMenu = true })
+            DropdownMenu(expanded = showDemoMenu, onDismissRequest = { showDemoMenu = false }) {
+                DemoScenario.entries.forEach { scenario ->
+                    DropdownMenuItem(
+                        text = { Text(scenario.displayName) },
+                        onClick = {
+                            showDemoMenu = false
+                            onDemo(scenario)
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SideAction(label: String, enabled: Boolean, onClick: () -> Unit) {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelLarge,
+        color = if (enabled) MaterialTheme.colorScheme.onBackground else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+        modifier = Modifier
+            .clip(MaterialTheme.shapes.small)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    )
+}
+
+/**
+ * Réglages facultatifs, dans un panneau qui monte du bas : tout marche sans y
+ * toucher. Le tempo et la gamme sont ceux du projet FL Studio, pour qui les connaît.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SettingsSheet(uiState: RecordingUiState, viewModel: RecordingViewModel, onDismiss: () -> Unit) {
+    val idle = !uiState.isRecording && !uiState.isRefining
+    var bpmText by remember { mutableStateOf(uiState.projectBpm?.toString() ?: "") }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Réglages", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                TextButton(onClick = onDismiss) {
+                    Text("OK", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+
+            SettingsSection(
+                title = "Tempo",
+                footer = if (uiState.projectBpm != null) {
+                    "$COUNT_IN_BEATS clics de décompte avant de chanter (mieux avec un casque)."
+                } else {
+                    "Donne le tempo de ton projet pour avoir un décompte et caler les notes sur les temps."
+                }
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Tempo du projet", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+                    OutlinedTextField(
+                        value = bpmText,
+                        onValueChange = { new ->
+                            bpmText = new.filter { it.isDigit() }.take(3)
+                            viewModel.setProjectBpm(bpmText.toIntOrNull()?.takeIf { it in MIN_EXPORT_BPM..MAX_EXPORT_BPM })
+                        },
+                        placeholder = { Text("BPM") },
+                        singleLine = true,
+                        enabled = idle,
+                        isError = bpmText.isNotEmpty() && uiState.projectBpm == null,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        shape = MaterialTheme.shapes.small,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            unfocusedBorderColor = MaterialTheme.colorScheme.surfaceVariant,
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
+                            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        modifier = Modifier.width(120.dp)
+                    )
+                }
+                if (uiState.projectBpm != null) {
+                    SettingsDivider()
+                    SettingsSwitchRow(
+                        title = "Métronome pendant la prise",
+                        subtitle = null,
+                        checked = uiState.isMetronomeEnabled,
+                        enabled = idle,
+                        onToggle = viewModel::toggleMetronome
+                    )
+                    SettingsDivider()
+                    SettingsSwitchRow(
+                        title = "Caler les notes sur le tempo",
+                        subtitle = "Quantification à la double-croche",
+                        checked = uiState.isQuantizeEnabled,
+                        enabled = true,
+                        onToggle = viewModel::toggleQuantize
+                    )
+                }
+            }
+
+            SettingsSection(title = "Justesse") {
+                ScalePickerRow(selected = uiState.projectScale, enabled = idle, onSelect = viewModel::setProjectScale)
+                SettingsDivider()
+                SettingsSwitchRow(
+                    title = "Rendre plus juste",
+                    subtitle = "Si tu chantes entre deux notes",
+                    checked = uiState.isPitchCorrectionEnabled,
+                    enabled = idle,
+                    onToggle = viewModel::togglePitchCorrection
+                )
+            }
+
+            SettingsSection(title = "Export", footer = "Tout est facultatif : l'appli marche sans toucher à ces réglages.") {
+                SettingsSwitchRow(
+                    title = "Garder le vibrato",
+                    subtitle = "Ajoute du pitch bend au fichier MIDI",
+                    checked = uiState.isPitchBendEnabled,
+                    enabled = true,
+                    onToggle = viewModel::togglePitchBend
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+        }
     }
 }
 
@@ -392,17 +562,29 @@ private val TONIC_NAMES = listOf("Do", "Do#", "Ré", "Mi♭", "Mi", "Fa", "Fa#",
 private fun ScaleConstraint.frenchName() =
     "${TONIC_NAMES[rootPitchClass]} ${if (scale == Scale.NATURAL_MINOR) "mineur" else "majeur"}"
 
-/** "Gamme de mon projet" : Automatique, ou l'une des 24 gammes majeures / mineures. */
+/** "Gamme du projet" : Automatique, ou l'une des 24 gammes majeures / mineures. */
 @Composable
-private fun ScalePicker(selected: ScaleConstraint?, enabled: Boolean, onSelect: (ScaleConstraint?) -> Unit) {
+private fun ScalePickerRow(selected: ScaleConstraint?, enabled: Boolean, onSelect: (ScaleConstraint?) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     val choices = listOf(Scale.MAJOR, Scale.NATURAL_MINOR).flatMap { scale -> (0..11).map { ScaleConstraint(scale, it) } }
     Box {
-        TextButton(onClick = { expanded = true }, enabled = enabled) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = enabled) { expanded = true }
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Text(
-                "Gamme de mon projet : ${selected?.frenchName() ?: "automatique"}".uppercase(),
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary
+                "Gamme du projet",
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                "${selected?.frenchName() ?: "Automatique"}  ›",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
@@ -418,15 +600,17 @@ private fun ScalePicker(selected: ScaleConstraint?, enabled: Boolean, onSelect: 
 @Composable
 private fun ExportBpmDialog(initialBpm: Int, onConfirm: (Int) -> Unit, onDismiss: () -> Unit) {
     var text by remember { mutableStateOf(initialBpm.toString()) }
-    val bpm = text.toIntOrNull()?.takeIf { it in 40..300 }
+    val bpm = text.toIntOrNull()?.takeIf { it in MIN_EXPORT_BPM..MAX_EXPORT_BPM }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Tempo de ton projet") },
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = { Text("Tempo de ton projet", style = MaterialTheme.typography.titleLarge) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
                     "Mets le même BPM que ton projet FL Studio : les notes tomberont au bon endroit.",
-                    style = MaterialTheme.typography.bodyMedium
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 OutlinedTextField(
                     value = text,
@@ -434,15 +618,20 @@ private fun ExportBpmDialog(initialBpm: Int, onConfirm: (Int) -> Unit, onDismiss
                     label = { Text("BPM") },
                     singleLine = true,
                     isError = bpm == null,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    shape = MaterialTheme.shapes.small
                 )
             }
         },
         confirmButton = {
-            TextButton(onClick = { bpm?.let(onConfirm) }, enabled = bpm != null) { Text("EXPORTER") }
+            TextButton(onClick = { bpm?.let(onConfirm) }, enabled = bpm != null) {
+                Text("Exporter", style = MaterialTheme.typography.labelLarge)
+            }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("ANNULER") }
+            TextButton(onClick = onDismiss) {
+                Text("Annuler", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     )
 }
@@ -460,4 +649,3 @@ private fun Context.openAppSettings() {
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     )
 }
-
