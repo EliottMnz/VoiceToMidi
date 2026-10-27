@@ -1,6 +1,6 @@
 # VoiceToMidi — état du projet
 
-*Mis à jour le 20 octobre 2026 (prises réelles de l'auteur, refonte des options). Ce document s'adresse à un humain ou à un agent IA qui reprend le projet : il explique le but, ce qui existe, comment ça marche, comment c'est mesuré, et ce qui reste ouvert.*
+*Mis à jour le 27 octobre 2026 (refonte de l'interface, écoute au piano, correction des notes, accueil à trois modes). Ce document s'adresse à un humain ou à un agent IA qui reprend le projet : il explique le but, ce qui existe, comment ça marche, comment c'est mesuré, et ce qui reste ouvert.*
 
 ---
 
@@ -15,6 +15,10 @@ Contraintes qui guident tous les choix :
 - **Le résultat doit être utilisable dans un DAW** : les bonnes notes, au bon moment, sans notes parasites.
 
 ## 2. Ce que fait l'appli aujourd'hui
+
+L'accueil propose trois modes : **Mélodie** (tout ce qui suit), **Composition** (rassemble les mélodies qu'on y envoie : aperçu, écoute, retrait ; les pistes restent en mémoire tant que l'appli est ouverte) et **Drums** (annoncé, vide pour l'instant). Le but à terme : faire une mélodie, des drums, et assembler un morceau complet dans la composition.
+
+Dans le mode Mélodie :
 
 - **Enregistrement au micro** (PCM 16 bits mono, 44,1 kHz), avec une **petite courbe en direct** de la voix (mini piano roll sur 2 octaves, nom des notes en français, note courante en surbrillance).
 - **Gros bouton "maintiens pendant la note"** (facultatif) : l'utilisateur appuie au début de chaque note et relâche à la fin. Le premier appui lance l'enregistrement s'il n'a pas commencé.
@@ -32,7 +36,11 @@ Contraintes qui guident tous les choix :
 - **Source micro `VOICE_RECOGNITION`** (sinon `MIC`) : gain calibré, sans gain automatique ni débruitage. **Jamais `UNPROCESSED`** : sur la Galaxy Tab A8 (SM-X200, Android 13) de l'auteur, l'appareil la déclare non prise en charge mais l'ouvre quand même et livre un son ~35 dB trop faible (aucune note détectée). Le test `MicSourceProbe` (sur l'appareil, lancé à la main) mesure chaque source en jouant un La par le haut-parleur.
 - **Datation des appuis** : par l'horloge du micro (`AudioRecord.getTimestamp`), qui inclut la latence matérielle ; à défaut, estimation par les frames reçues. Sur la tablette, dater les appuis avec « la dernière frame analysée » les plaçait ~300 ms trop tôt. Les appuis de moins de 80 ms (ex. celui qui lance l'enregistrement) ne sont pas des notes.
 
-Interface : Jetpack Compose, thème sombre « emo » (noir, rouge sang, coins carrés).
+- **Vue d'ensemble de la prise** : à la fin de l'analyse, la courbe se dézoome sur toute la prise et les notes trouvées apparaissent en barres (piano roll). Toucher une note ouvre une **roue de notes** : chaque note qui passe au centre est jouée au piano et redessinée dans le graphique ; on valide ou on supprime la note. Le vibrato exporté (pitch bend) est mesuré autour de la hauteur trouvée par l'analyse, donc une note corrigée garde son vibrato.
+- **Écoute au piano** : le fichier MIDI tel qu'il serait exporté est joué par le synthé General MIDI intégré à Android (`MediaPlayer` lit les `.mid`). Un curseur sur la vue d'ensemble choisit d'où écouter (toucher pour le placer, glisser pour le déplacer) ; la note jouée s'allume.
+- **Envoi dans la composition** : les notes exportées (mêmes options), décalées pour commencer à 0 si aucun tempo de projet n'a été donné.
+
+Interface : Jetpack Compose, thème sombre (noir, rouge sang), police système, coins arrondis, une seule action principale par écran (bouton d'enregistrement rond en bas, pavé « maintiens » au-dessus, réglages dans un panneau qui monte du bas). Changer « Rendre plus juste » ou la gamme ré-analyse la prise et **efface les corrections faites à la main**.
 
 ## 3. Architecture
 
@@ -53,7 +61,9 @@ app/src/main/java/com/example/voicetomidi/
 │               NoteSegmenter (découpage temps réel, pour l'affichage en direct)
 │               Quantizer, PitchBendEvent, Scale, PitchMath
 ├── midi/       MidiFileWriter (écriture SMF à la main, javax.sound.midi n'existe pas sur Android)
-└── ui/         RecordingScreen, RecordingViewModel, SingingWidgets (bouton + courbe), thème
+└── ui/         HomeScreen (accueil, écran Drums), RecordingScreen + RecordingViewModel (mode Mélodie),
+                SingingWidgets (courbe / piano roll, pavé, bouton d'enregistrement),
+                CompositionScreen + CompositionViewModel (pistes reçues), thème
 
 app/src/test/java/com/example/voicetomidi/
 ├── notes/, midi/, pitch/, pipeline/   tests unitaires et d'intégration
@@ -219,7 +229,8 @@ Ce que ça apprend :
 - **Débuts de notes** : 7 à 10 % de notes à la bonne hauteur mais décalées de 100 à 250 ms ; en mode bouton, les débuts sont en moyenne 17 ms trop tôt.
 - **Découpage du chant lié sans bouton** : notes longues parfois coupées, notes rapides parfois fusionnées (vocadito 2 : 53 %).
 - **YIN** : erreurs d'octave (~1 %), pas de candidats multiples comme pYIN.
-- **Pas de retour sonore** dans l'appli (on ne peut pas réécouter le MIDI avant l'export), **pas d'édition** des notes.
+- **Retour sonore et édition limités** : on peut écouter le MIDI au piano et corriger la hauteur d'une note ou la supprimer, mais pas encore modifier son début ou sa durée, ni réécouter sa propre voix. Le piano est celui, assez basique, du synthé intégré à Android.
+- **Composition** : les pistes ne sont pas sauvegardées (perdues si Android ferme l'appli) et ne peuvent pas encore être jouées ensemble ni exportées en un seul fichier.
 - **Analyse uniquement après l'arrêt**, le temps réel ne sert qu'à l'affichage.
 - **Premiers tests sur la vraie voix de l'auteur** (tablette Samsung, « Au clair de la lune » avec le bouton) : après correction du micro et de la datation des appuis, 10 notes justes sur 10 appuis (la 11e note n'avait pas d'appui). Erreur restante typique : une note chantée ~40 cents trop haut qui bascule sur la note voisine, elle aussi dans la gamme (indécidable automatiquement).
 - **Tonalités mineures** : seul le mineur naturel est modélisé.
@@ -231,9 +242,10 @@ Ce que ça apprend :
 3. **Erreurs d'un demi-ton en mode bouton** : analyser les cas (où tombe la médiane, quelle part de la note est un glissé), essayer une médiane sur une fenêtre plus centrée, ou Viterbi contraint à une seule note par appui.
 4. **HMM avec durées** (sous-états attaque → stable, comme pYIN-notes) et émission pondérée par la stabilité de la hauteur (moins de faux Ré dans un glissé Do→Mi).
 5. **YIN à plusieurs candidats** donnés à Viterbi, ou modèle neuronal léger (PESTO, CREPE, FCPE, Basic Pitch ; licences et tailles à vérifier) via ONNX Runtime, évaluable d'abord dans le benchmark sur PC.
-6. **Interface pour les erreurs indécidables** : réécoute du résultat, notes incertaines surlignées (probabilités a posteriori du HMM) avec l'alternative en un tap (« Mi ou Fa ? »).
+6. **Interface pour les erreurs indécidables** : la réécoute et la correction à la roue existent ; reste à surligner les notes incertaines (probabilités a posteriori du HMM) et proposer l'alternative en un tap (« Mi ou Fa ? »).
 7. **Appuis du bouton comme indice dans le HMM** plutôt que découpage imposé (un appui oublié ou doublé ne casserait plus tout). Gros chantier.
 8. **Dérive non linéaire** (filtre de Kalman) : à valider sur des prises longues, impossible sur vocadito.
+9. **Deviner le tempo sans métronome** pour caler les notes sur les temps : chercher ensemble tempo et position des temps sur les débuts de notes, suivre un tempo qui varie, convertir en temps musicaux puis écrire au BPM du projet. Ambiguïté ×2 / ÷2 à laisser trancher par l'utilisateur. L'ancienne `estimateGridMs` (médiane des écarts, sans position des temps) est toujours dans `Quantizer.kt` mais n'est plus utilisée.
 
 ## 8. Environnement et pièges pratiques
 
