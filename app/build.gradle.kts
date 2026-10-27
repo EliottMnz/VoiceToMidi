@@ -48,6 +48,8 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
     testImplementation(libs.junit)
+    // org.json d'Android n'existe qu'en coquille vide dans les tests sur PC : la vraie, pour les tests seulement.
+    testImplementation(libs.org.json)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)

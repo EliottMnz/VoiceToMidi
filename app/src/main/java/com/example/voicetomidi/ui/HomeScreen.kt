@@ -30,14 +30,14 @@ import com.example.voicetomidi.ui.theme.EmoCard
 import com.example.voicetomidi.ui.theme.ScreenHeader
 
 /** Les écrans de l'appli. */
-enum class Destination { HOME, COMPOSITION, MELODY, DRUMS }
+enum class Destination { HOME, COMPOSITION, PROJECT, MELODY, DRUMS }
 
 /**
  * Accueil : les trois modes. Mélodie est le mode qui marche aujourd'hui ;
  * Composition rassemble ce qu'on y envoie ; Drums arrive plus tard.
  */
 @Composable
-fun HomeScreen(trackCount: Int, onOpen: (Destination) -> Unit, modifier: Modifier = Modifier) {
+fun HomeScreen(projectCount: Int, onOpen: (Destination) -> Unit, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -56,10 +56,10 @@ fun HomeScreen(trackCount: Int, onOpen: (Destination) -> Unit, modifier: Modifie
 
         ModeCard(
             title = "Composition",
-            subtitle = when (trackCount) {
+            subtitle = when (projectCount) {
                 0 -> "Rassemble tes mélodies et tes rythmes"
-                1 -> "1 piste"
-                else -> "$trackCount pistes"
+                1 -> "1 projet"
+                else -> "$projectCount projets"
             },
             icon = ::drawCompositionIcon,
             onClick = { onOpen(Destination.COMPOSITION) }

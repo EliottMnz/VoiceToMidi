@@ -95,6 +95,30 @@ class MidiFileWriterTest {
     }
 
     @Test
+    fun `tracks written together land on separate channels at the same time`() {
+        val melodyA = listOf(NoteEvent(midiNote = 60, startTimeMs = 0, endTimeMs = 500, velocity = 90))
+        val melodyB = listOf(NoteEvent(midiNote = 67, startTimeMs = 0, endTimeMs = 500, velocity = 90))
+        val melodies = (0 until 10).map { listOf(NoteEvent(midiNote = 60 + it, startTimeMs = 0, endTimeMs = 100, velocity = 90)) }
+
+        val sequence = MidiSystem.getSequence(ByteArrayInputStream(MidiFileWriter().writeTogether(listOf(melodyA, melodyB))))
+        val noteOns = (0 until sequence.tracks.single().size())
+            .map { sequence.tracks.single().get(it) }
+            .filter { (it.message as? ShortMessage)?.command == ShortMessage.NOTE_ON }
+
+        assertEquals(listOf(0, 1), noteOns.map { (it.message as ShortMessage).channel }.sorted())
+        assertTrue("les deux pistes démarrent ensemble", noteOns.all { it.tick == 0L })
+
+        // Le canal 10 (index 9) est réservé aux percussions : une 10e mélodie passe au canal suivant.
+        val tenTracks = MidiSystem.getSequence(ByteArrayInputStream(MidiFileWriter().writeTogether(melodies)))
+        val channels = (0 until tenTracks.tracks.single().size())
+            .mapNotNull { tenTracks.tracks.single().get(it).message as? ShortMessage }
+            .filter { it.command == ShortMessage.NOTE_ON }
+            .map { it.channel }
+        assertTrue(9 !in channels)
+        assertEquals(10, channels.toSet().size)
+    }
+
+    @Test
     fun `no pitch bend or RPN messages are written when no pitch bends are given`() {
         val notes = listOf(NoteEvent(midiNote = 60, startTimeMs = 0, endTimeMs = 500, velocity = 90))
 

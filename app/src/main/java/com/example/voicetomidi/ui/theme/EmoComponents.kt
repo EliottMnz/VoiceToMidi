@@ -24,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 /** Bouton plein, pour l'action principale de l'écran (une seule à la fois). */
@@ -168,11 +169,11 @@ fun SettingsSwitchRow(
 }
 
 /**
- * Barre du haut d'un mode : retour à l'accueil à gauche, titre au centre,
- * action éventuelle à droite (ex : Réglages).
+ * Barre du haut d'un écran : retour à gauche (vers [backLabel]), titre au
+ * centre, action éventuelle à droite (ex : Réglages).
  */
 @Composable
-fun ScreenHeader(title: String, onBack: () -> Unit, action: @Composable () -> Unit = {}) {
+fun ScreenHeader(title: String, onBack: () -> Unit, backLabel: String = "Accueil", action: @Composable () -> Unit = {}) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -180,9 +181,17 @@ fun ScreenHeader(title: String, onBack: () -> Unit, action: @Composable () -> Un
             .heightIn(min = 48.dp)
     ) {
         TextButton(onClick = onBack, modifier = Modifier.align(Alignment.CenterStart)) {
-            Text("‹ Accueil", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+            Text("‹ $backLabel", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
         }
-        Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.align(Alignment.Center))
+        Text(
+            title,
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(horizontal = 120.dp)
+        )
         Box(modifier = Modifier.align(Alignment.CenterEnd)) { action() }
     }
 }

@@ -16,7 +16,7 @@ Contraintes qui guident tous les choix :
 
 ## 2. Ce que fait l'appli aujourd'hui
 
-L'accueil propose trois modes : **Mélodie** (tout ce qui suit), **Composition** (rassemble les mélodies qu'on y envoie : aperçu, écoute, retrait ; les pistes restent en mémoire tant que l'appli est ouverte) et **Drums** (annoncé, vide pour l'instant). Le but à terme : faire une mélodie, des drums, et assembler un morceau complet dans la composition.
+L'accueil propose trois modes : **Mélodie** (tout ce qui suit), **Composition** et **Drums** (annoncé, vide pour l'instant). La Composition contient des **projets**, sauvegardés sur le téléphone (`projets.json`, via `ProjectJson`). Un projet regroupe des pistes (mélodies, plus tard drums) qui démarrent toutes à 0 ; « Tout écouter » écrit les pistes non coupées dans **un seul fichier MIDI, une piste par canal** (`MidiFileWriter.writeTogether`), donc elles jouent forcément synchro. Chaque piste a un bouton muet (on peut couper en pleine écoute sans perdre la position), toucher une piste place la lecture. Envoyer une mélodie depuis le mode Mélodie ouvre « Envoyer dans… » (projet existant ou nouveau) ; « Ajouter une mélodie » depuis un projet ouvre le mode Mélodie, qui envoie alors directement dans ce projet puis y revient. Le but à terme : faire une mélodie, des drums, et assembler un morceau complet dans la composition.
 
 Dans le mode Mélodie :
 
@@ -230,7 +230,7 @@ Ce que ça apprend :
 - **Découpage du chant lié sans bouton** : notes longues parfois coupées, notes rapides parfois fusionnées (vocadito 2 : 53 %).
 - **YIN** : erreurs d'octave (~1 %), pas de candidats multiples comme pYIN.
 - **Retour sonore et édition limités** : on peut écouter le MIDI au piano et corriger la hauteur d'une note ou la supprimer, mais pas encore modifier son début ou sa durée, ni réécouter sa propre voix. Le piano est celui, assez basique, du synthé intégré à Android.
-- **Composition** : les pistes ne sont pas sauvegardées (perdues si Android ferme l'appli) et ne peuvent pas encore être jouées ensemble ni exportées en un seul fichier.
+- **Composition** : les pistes d'un projet démarrent toutes à leur 1re note (ou au 1er temps si un tempo de projet était donné à l'enregistrement) : deux mélodies chantées séparément, sans tempo commun, ne tombent pas rythmiquement ensemble. Pas encore d'export du projet entier, de décalage d'une piste, ni d'instrument ou de volume par piste.
 - **Analyse uniquement après l'arrêt**, le temps réel ne sert qu'à l'affichage.
 - **Premiers tests sur la vraie voix de l'auteur** (tablette Samsung, « Au clair de la lune » avec le bouton) : après correction du micro et de la datation des appuis, 10 notes justes sur 10 appuis (la 11e note n'avait pas d'appui). Erreur restante typique : une note chantée ~40 cents trop haut qui bascule sur la note voisine, elle aussi dans la gamme (indécidable automatiquement).
 - **Tonalités mineures** : seul le mineur naturel est modélisé.

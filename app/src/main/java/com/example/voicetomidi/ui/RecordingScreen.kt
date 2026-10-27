@@ -100,8 +100,12 @@ import java.util.Locale
  */
 @Composable
 fun RecordingScreen(
+    projects: ProjectsViewModel,
+    /** Projet d'où on vient (« Ajouter une mélodie ») : la mélodie y part directement. */
+    targetProjectId: Long?,
     onBack: () -> Unit,
-    onSendToComposition: (List<NoteEvent>) -> String,
+    /** Appelé après un envoi direct dans [targetProjectId] (pour revenir au projet). */
+    onSentToTarget: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: RecordingViewModel = viewModel()
 ) {
@@ -111,6 +115,15 @@ fun RecordingScreen(
     viewModel.previewDir = context.cacheDir
     var showSettings by remember { mutableStateOf(false) }
     var showBpmDialog by remember { mutableStateOf(false) }
+    var showSendSheet by remember { mutableStateOf(false) }
+    val projectsState by projects.uiState.collectAsState()
+    val targetProject = targetProjectId?.let { id -> projectsState.projects.firstOrNull { it.id == id } }
+    val sendTo = { projectId: Long ->
+        viewModel.stopPreview()
+        val trackName = projects.addMelody(projectId, viewModel.melodyForComposition())
+        val projectName = projects.project(projectId)?.name.orEmpty()
+        Toast.makeText(context, "« $trackName » ajoutée à « $projectName »", Toast.LENGTH_SHORT).show()
+    }
     // Note en cours de correction (roue des notes ouverte), et la hauteur visée par la roue.
     var editingNoteIndex by remember { mutableStateOf<Int?>(null) }
     var editingPitch by remember { mutableStateOf<Int?>(null) }
@@ -200,7 +213,7 @@ fun RecordingScreen(
             .padding(horizontal = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        ScreenHeader(title = "Mélodie", onBack = onBack) {
+        ScreenHeader(title = "Mélodie", onBack = onBack, backLabel = targetProject?.name ?: "Accueil") {
             TextButton(onClick = { showSettings = true }) {
                 Text("Réglages", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
             }
@@ -259,10 +272,15 @@ fun RecordingScreen(
                         showBpmDialog = true
                     },
                     onTogglePreview = viewModel::togglePreview,
+                    sendLabel = targetProject?.let { "Ajouter à « ${it.name} »" } ?: "Envoyer dans la composition",
                     onSendToComposition = {
-                        viewModel.stopPreview()
-                        val name = onSendToComposition(viewModel.melodyForComposition())
-                        Toast.makeText(context, "« $name » ajoutée à la composition", Toast.LENGTH_SHORT).show()
+                        if (targetProject != null) {
+                            sendTo(targetProject.id)
+                            onSentToTarget()
+                        } else {
+                            viewModel.stopPreview()
+                            showSendSheet = true
+                        }
                     },
                     onNoteClick = editNote,
                     onClear = viewModel::clearNotes
@@ -332,6 +350,22 @@ fun RecordingScreen(
                 }
             )
         }
+    }
+
+    if (showSendSheet) {
+        SendToProjectSheet(
+            projects = projectsState.projects,
+            suggestedName = projects.suggestedProjectName(),
+            onSendTo = { projectId ->
+                showSendSheet = false
+                sendTo(projectId)
+            },
+            onCreateAndSend = { name ->
+                showSendSheet = false
+                sendTo(projects.createProject(name))
+            },
+            onDismiss = { showSendSheet = false }
+        )
     }
 
     if (showSettings) {
@@ -406,6 +440,7 @@ private fun ResultCard(
     isPlaying: Boolean,
     onExport: () -> Unit,
     onTogglePreview: () -> Unit,
+    sendLabel: String,
     onSendToComposition: () -> Unit,
     onNoteClick: (Int) -> Unit,
     onClear: () -> Unit
@@ -413,7 +448,7 @@ private fun ResultCard(
     var showNotes by remember { mutableStateOf(false) }
     EmoCard {
         EmoButton(text = "Exporter en MIDI", onClick = onExport, modifier = Modifier.fillMaxWidth())
-        EmoOutlinedButton(text = "Envoyer dans la composition", onClick = onSendToComposition, modifier = Modifier.fillMaxWidth())
+        EmoOutlinedButton(text = sendLabel, onClick = onSendToComposition, modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             EmoOutlinedButton(
                 text = if (isPlaying) "❚❚  Pause" else "▶  Écouter",

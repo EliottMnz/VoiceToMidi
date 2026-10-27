@@ -19,13 +19,29 @@ class MidiFileWriter(
     private val beatsPerMinute: Int = DEFAULT_BPM
 ) {
 
-    fun write(notes: List<NoteEvent>, pitchBends: List<PitchBendEvent> = emptyList()): ByteArray {
+    fun write(notes: List<NoteEvent>, pitchBends: List<PitchBendEvent> = emptyList()): ByteArray =
+        writeEvents(buildEventList(notes, pitchBends, channel = 0), declarePitchBendRange = pitchBends.isNotEmpty())
+
+    /**
+     * Plusieurs pistes dans un seul fichier, chacune sur son canal MIDI : elles
+     * partagent le même tempo et la même horloge, donc jouent forcément
+     * ensemble. Le canal 10 (index 9), réservé aux percussions en General MIDI,
+     * est sauté pour les mélodies.
+     */
+    fun writeTogether(parts: List<List<NoteEvent>>): ByteArray {
+        val events = parts
+            .flatMapIndexed { i, notes -> buildEventList(notes, emptyList(), MELODIC_CHANNELS[i % MELODIC_CHANNELS.size]) }
+            .sortedWith(compareBy({ it.tick }, { it.order }))
+        return writeEvents(events, declarePitchBendRange = false)
+    }
+
+    private fun writeEvents(events: List<MidiEvent>, declarePitchBendRange: Boolean): ByteArray {
         val track = ByteArrayOutputStream()
         writeTempoEvent(track)
-        if (pitchBends.isNotEmpty()) writePitchBendRangeSetup(track)
+        if (declarePitchBendRange) writePitchBendRangeSetup(track)
 
         var lastTick = 0L
-        for (event in buildEventList(notes, pitchBends)) {
+        for (event in events) {
             writeVariableLengthQuantity(track, event.tick - lastTick)
             track.write(event.bytes)
             lastTick = event.tick
@@ -41,22 +57,25 @@ class MidiFileWriter(
 
     private data class MidiEvent(val tick: Long, val order: Int, val bytes: ByteArray)
 
-    private fun buildEventList(notes: List<NoteEvent>, pitchBends: List<PitchBendEvent>): List<MidiEvent> {
+    private fun buildEventList(notes: List<NoteEvent>, pitchBends: List<PitchBendEvent>, channel: Int): List<MidiEvent> {
         val events = mutableListOf<MidiEvent>()
+        val noteOn = (NOTE_ON.toInt() or channel).toByte()
+        val noteOff = (NOTE_OFF.toInt() or channel).toByte()
+        val pitchBend = (PITCH_BEND.toInt() or channel).toByte()
         for (note in notes) {
             val pitch = note.midiNote.coerceIn(0, 127)
             val velocity = note.velocity.coerceIn(1, 127)
             // order=0 pour les Note Off : à tick égal, on coupe avant de rallumer,
             // ce qui évite qu'une note tenue en legato ne "saute" un instant.
-            events += MidiEvent(millisToTicks(note.startTimeMs), order = 1, bytes = byteArrayOf(NOTE_ON, pitch.toByte(), velocity.toByte()))
-            events += MidiEvent(millisToTicks(note.endTimeMs), order = 0, bytes = byteArrayOf(NOTE_OFF, pitch.toByte(), 0))
+            events += MidiEvent(millisToTicks(note.startTimeMs), order = 1, bytes = byteArrayOf(noteOn, pitch.toByte(), velocity.toByte()))
+            events += MidiEvent(millisToTicks(note.endTimeMs), order = 0, bytes = byteArrayOf(noteOff, pitch.toByte(), 0))
         }
         for (bend in pitchBends) {
             val value = bend.value.coerceIn(0, 16383)
             events += MidiEvent(
                 millisToTicks(bend.timestampMs),
                 order = 2,
-                bytes = byteArrayOf(PITCH_BEND, (value and 0x7F).toByte(), ((value shr 7) and 0x7F).toByte())
+                bytes = byteArrayOf(pitchBend, (value and 0x7F).toByte(), ((value shr 7) and 0x7F).toByte())
             )
         }
         return events.sortedWith(compareBy({ it.tick }, { it.order }))
@@ -141,5 +160,8 @@ class MidiFileWriter(
         private const val NOTE_OFF = 0x80.toByte()
         private const val CONTROL_CHANGE = 0xB0.toByte()
         private const val PITCH_BEND = 0xE0.toByte()
+
+        /** Canaux pour les mélodies : tous sauf le 10 (index 9), celui des percussions. */
+        private val MELODIC_CHANNELS = (0..15).filter { it != 9 }
     }
 }

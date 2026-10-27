@@ -23,8 +23,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.voicetomidi.ui.CompositionScreen
-import com.example.voicetomidi.ui.CompositionViewModel
+import com.example.voicetomidi.ui.ProjectScreen
+import com.example.voicetomidi.ui.ProjectsScreen
+import com.example.voicetomidi.ui.ProjectsViewModel
 import com.example.voicetomidi.ui.Destination
 import com.example.voicetomidi.ui.DrumsScreen
 import com.example.voicetomidi.ui.HomeScreen
@@ -43,19 +44,40 @@ class MainActivity : ComponentActivity() {
             VoiceToMidiTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     var destination by rememberSaveable { mutableStateOf(Destination.HOME) }
+                    // Projet ouvert, et projet qui a lancé le mode Mélodie (« Ajouter une mélodie »).
+                    var openProjectId by rememberSaveable { mutableStateOf<Long?>(null) }
+                    var melodyTargetId by rememberSaveable { mutableStateOf<Long?>(null) }
                     // Partagée par tous les modes : chacun peut y envoyer ses pistes.
-                    val composition: CompositionViewModel = viewModel()
-                    composition.previewDir = cacheDir
-                    val compositionState by composition.uiState.collectAsState()
+                    val projects: ProjectsViewModel = viewModel()
+                    projects.attach(filesDir, cacheDir)
+                    val projectsState by projects.uiState.collectAsState()
                     val goHome = { destination = Destination.HOME }
+                    val openProject = { id: Long ->
+                        openProjectId = id
+                        destination = Destination.PROJECT
+                    }
+                    val back = {
+                        when (destination) {
+                            Destination.PROJECT -> destination = Destination.COMPOSITION
+                            Destination.MELODY -> melodyTargetId?.let(openProject) ?: goHome()
+                            else -> goHome()
+                        }
+                    }
+                    // Profondeur de chaque écran : on avance vers la droite, on revient vers la gauche.
+                    fun depth(screen: Destination) = when (screen) {
+                        Destination.HOME -> 0
+                        Destination.COMPOSITION, Destination.DRUMS -> 1
+                        Destination.PROJECT -> 2
+                        Destination.MELODY -> if (melodyTargetId != null) 3 else 1
+                    }
 
-                    BackHandler(enabled = destination != Destination.HOME, onBack = goHome)
+                    BackHandler(enabled = destination != Destination.HOME, onBack = back)
 
-                    // Comme sur iPhone : un mode arrive par la droite, le retour à l'accueil repart vers la droite.
+                    // Comme sur iPhone : un écran plus profond arrive par la droite, le retour repart vers la droite.
                     AnimatedContent(
                         targetState = destination,
                         transitionSpec = {
-                            if (targetState == Destination.HOME) {
+                            if (depth(targetState) < depth(initialState)) {
                                 (slideInHorizontally { -it / 4 } + fadeIn()) togetherWith (slideOutHorizontally { it } + fadeOut())
                             } else {
                                 (slideInHorizontally { it } + fadeIn()) togetherWith (slideOutHorizontally { -it / 4 } + fadeOut())
@@ -66,17 +88,31 @@ class MainActivity : ComponentActivity() {
                     ) { screen ->
                         when (screen) {
                             Destination.HOME -> HomeScreen(
-                                trackCount = compositionState.tracks.size,
-                                onOpen = { destination = it }
+                                projectCount = projectsState.projects.size,
+                                onOpen = {
+                                    melodyTargetId = null
+                                    destination = it
+                                }
                             )
                             Destination.MELODY -> RecordingScreen(
-                                onBack = goHome,
-                                onSendToComposition = composition::addMelody
+                                projects = projects,
+                                targetProjectId = melodyTargetId,
+                                onBack = back,
+                                onSentToTarget = back
                             )
-                            Destination.COMPOSITION -> CompositionScreen(
-                                viewModel = composition,
+                            Destination.COMPOSITION -> ProjectsScreen(
+                                viewModel = projects,
                                 onBack = goHome,
-                                onCreateMelody = { destination = Destination.MELODY }
+                                onOpenProject = openProject
+                            )
+                            Destination.PROJECT -> ProjectScreen(
+                                projectId = openProjectId ?: -1L,
+                                viewModel = projects,
+                                onBack = back,
+                                onAddMelody = {
+                                    melodyTargetId = openProjectId
+                                    destination = Destination.MELODY
+                                }
                             )
                             Destination.DRUMS -> DrumsScreen(onBack = goHome)
                         }
