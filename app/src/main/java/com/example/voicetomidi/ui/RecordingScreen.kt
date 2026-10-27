@@ -52,6 +52,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -74,6 +75,19 @@ import com.example.voicetomidi.ui.theme.EmoOutlinedButton
 import com.example.voicetomidi.ui.theme.SettingsDivider
 import com.example.voicetomidi.ui.theme.SettingsSection
 import com.example.voicetomidi.ui.theme.SettingsSwitchRow
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.platform.LocalDensity
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
+import kotlin.math.abs
 import java.io.IOException
 import java.util.Locale
 
@@ -94,6 +108,14 @@ fun RecordingScreen(
     viewModel.previewDir = context.cacheDir
     var showSettings by remember { mutableStateOf(false) }
     var showBpmDialog by remember { mutableStateOf(false) }
+    // Note en cours de correction (roue des notes ouverte), et la hauteur visée par la roue.
+    var editingNoteIndex by remember { mutableStateOf<Int?>(null) }
+    var editingPitch by remember { mutableStateOf<Int?>(null) }
+    val editNote = { index: Int ->
+        viewModel.stopPreview()
+        editingNoteIndex = index
+        editingPitch = uiState.completedNotes.getOrNull(index)?.midiNote
+    }
 
     var hasPermission by remember {
         mutableStateOf(
@@ -206,11 +228,28 @@ fun RecordingScreen(
                 takeTrail = uiState.takeTrail,
                 notes = uiState.completedNotes,
                 playbackPositionMs = uiState.playbackPositionMs,
+                cursorMs = uiState.cursorMs,
+                selectedNoteIndex = editingNoteIndex,
+                previewPitch = editingPitch,
+                onNoteTap = editNote,
+                onSeek = viewModel::seekTo,
+                onScrub = viewModel::scrubTo,
+                onScrubEnd = viewModel::endScrub,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(240.dp)
                     .clip(MaterialTheme.shapes.large)
             )
+
+            if (hasResult && uiState.takeTrail != null) {
+                Text(
+                    "Touche une note pour la changer · glisse pour choisir où écouter",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             uiState.errorMessage?.let { message -> ErrorCard(message) }
 
@@ -223,6 +262,7 @@ fun RecordingScreen(
                         showBpmDialog = true
                     },
                     onTogglePreview = viewModel::togglePreview,
+                    onNoteClick = editNote,
                     onClear = viewModel::clearNotes
                 )
             }
@@ -259,6 +299,37 @@ fun RecordingScreen(
             onImport = { importLauncher.launch(arrayOf("audio/*")) },
             onDemo = viewModel::startDemo
         )
+    }
+
+    editingNoteIndex?.let { index ->
+        val note = uiState.completedNotes.getOrNull(index)
+        if (note == null) {
+            editingNoteIndex = null
+            editingPitch = null
+        } else {
+            NotePickerSheet(
+                position = index + 1,
+                currentPitch = note.midiNote,
+                onCentered = { pitch ->
+                    editingPitch = pitch
+                    viewModel.auditionNote(pitch)
+                },
+                onConfirm = { pitch ->
+                    viewModel.setNotePitch(index, pitch)
+                    editingNoteIndex = null
+                    editingPitch = null
+                },
+                onDelete = {
+                    viewModel.deleteNote(index)
+                    editingNoteIndex = null
+                    editingPitch = null
+                },
+                onDismiss = {
+                    editingNoteIndex = null
+                    editingPitch = null
+                }
+            )
+        }
     }
 
     if (showSettings) {
@@ -333,6 +404,7 @@ private fun ResultCard(
     isPlaying: Boolean,
     onExport: () -> Unit,
     onTogglePreview: () -> Unit,
+    onNoteClick: (Int) -> Unit,
     onClear: () -> Unit
 ) {
     var showNotes by remember { mutableStateOf(false) }
@@ -340,7 +412,7 @@ private fun ResultCard(
         EmoButton(text = "Exporter en MIDI", onClick = onExport, modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             EmoOutlinedButton(
-                text = if (isPlaying) "■  Arrêter" else "▶  Écouter",
+                text = if (isPlaying) "❚❚  Pause" else "▶  Écouter",
                 onClick = onTogglePreview,
                 modifier = Modifier.weight(1f)
             )
@@ -360,6 +432,7 @@ private fun ResultCard(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .clickable { onNoteClick(index) }
                             .padding(vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -582,6 +655,130 @@ private fun SettingsSheet(uiState: RecordingUiState, viewModel: RecordingViewMod
         }
     }
 }
+
+/**
+ * Choix d'une note à la roue, façon sélecteur d'heure : chaque note qui passe
+ * au centre est jouée au piano (et redessinée dans le graphique), pour
+ * reconnaître à l'oreille celle qu'on avait en tête.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NotePickerSheet(
+    position: Int,
+    currentPitch: Int,
+    onCentered: (Int) -> Unit,
+    onConfirm: (Int) -> Unit,
+    onDelete: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    // Aigu en haut, grave en bas, comme dans le graphique.
+    val pitches = remember(currentPitch) { (currentPitch + PICKER_RANGE downTo currentPitch - PICKER_RANGE).toList() }
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = PICKER_RANGE)
+    val itemHeight = 48.dp
+    val itemHeightPx = with(LocalDensity.current) { itemHeight.toPx() }
+    // Avec 2 lignes de marge en haut, la note au centre est la 1re visible (arrondie à la plus proche).
+    val centeredIndex by remember {
+        derivedStateOf {
+            (listState.firstVisibleItemIndex + if (listState.firstVisibleItemScrollOffset > itemHeightPx / 2) 1 else 0)
+                .coerceIn(pitches.indices)
+        }
+    }
+    val scope = rememberCoroutineScope()
+    val currentOnCentered by rememberUpdatedState(onCentered)
+    LaunchedEffect(pitches) {
+        snapshotFlow { centeredIndex }.distinctUntilChanged().collect { currentOnCentered(pitches[it]) }
+    }
+
+    // Panneau compact et voile léger : le graphique reste visible au-dessus, la note y bouge en direct.
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = MaterialTheme.colorScheme.background,
+        scrimColor = Color.Black.copy(alpha = 0.2f)
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Note $position", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    "Fais défiler : chaque note est jouée au piano.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(itemHeight * PICKER_VISIBLE_ROWS)
+            ) {
+                Box(
+                    Modifier
+                        .align(Alignment.Center)
+                        .fillMaxWidth()
+                        .height(itemHeight)
+                        .clip(MaterialTheme.shapes.medium)
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                )
+                LazyColumn(
+                    state = listState,
+                    flingBehavior = rememberSnapFlingBehavior(lazyListState = listState),
+                    contentPadding = PaddingValues(vertical = itemHeight * (PICKER_VISIBLE_ROWS / 2)),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    itemsIndexed(pitches) { index, pitch ->
+                        val distance = abs(index - centeredIndex)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(itemHeight)
+                                .clickable {
+                                    if (index == centeredIndex) currentOnCentered(pitch)
+                                    else scope.launch { listState.animateScrollToItem(index) }
+                                },
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                frenchNoteName(pitch),
+                                style = if (distance == 0) MaterialTheme.typography.titleLarge else MaterialTheme.typography.bodyLarge,
+                                color = when (distance) {
+                                    0 -> MaterialTheme.colorScheme.onSurface
+                                    1 -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                }
+                            )
+                            if (pitch == currentPitch) {
+                                Text(
+                                    "  actuelle",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                EmoOutlinedButton(text = "Supprimer", onClick = onDelete, modifier = Modifier.weight(1f))
+                EmoButton(
+                    text = "Valider ${frenchNoteName(pitches[centeredIndex])}",
+                    onClick = { onConfirm(pitches[centeredIndex]) },
+                    modifier = Modifier.weight(1.4f)
+                )
+            }
+        }
+    }
+}
+
+/** La roue propose une octave au-dessus et une au-dessous de la note actuelle. */
+private const val PICKER_RANGE = 12
+private const val PICKER_VISIBLE_ROWS = 3
 
 private val TONIC_NAMES = listOf("Do", "Do#", "Ré", "Mi♭", "Mi", "Fa", "Fa#", "Sol", "La♭", "La", "Si♭", "Si")
 

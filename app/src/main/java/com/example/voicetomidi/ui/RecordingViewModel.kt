@@ -87,7 +87,9 @@ data class RecordingUiState(
      */
     val takeTrail: List<TrailPoint>? = null,
     /** Position de l'écoute au piano, sur la timeline de la prise (ms), ou null si rien ne joue. */
-    val playbackPositionMs: Long? = null
+    val playbackPositionMs: Long? = null,
+    /** Curseur de lecture posé par l'utilisateur (ms dans la prise), ou null = début de la mélodie. */
+    val cursorMs: Long? = null
 )
 
 /** Bornes d'amplitude RMS utilisées pour normaliser la jauge visuelle (cohérent avec NoteSegmenter). */
@@ -118,6 +120,10 @@ private const val PREVIEW_FILE_NAME = "ecoute.mid"
 
 /** L'écoute démarre un peu avant la 1re note, pour ne pas la couper. */
 private const val PREVIEW_LEAD_IN_MS = 150L
+
+/** Note jouée seule dans la roue des notes : assez longue pour être reconnue, assez forte pour être entendue. */
+private const val AUDITION_NOTE_MS = 700L
+private const val AUDITION_VELOCITY = 100
 
 /** Point de courbe d'une frame : hauteur en demi-tons MIDI, ou null si la hauteur n'est pas fiable. */
 private fun trailPoint(timestampMs: Long, frequencyHz: Float, confidence: Float, isHeld: Boolean) = TrailPoint(
@@ -204,6 +210,17 @@ class RecordingViewModel : ViewModel() {
 
     private var previewPlayer: MediaPlayer? = null
     private var previewJob: Job? = null
+
+    // Note jouée seule au piano pendant qu'on fait défiler la roue des notes.
+    private var auditionPlayer: MediaPlayer? = null
+
+    // Lecture en cours quand l'utilisateur a commencé à faire glisser le curseur : elle reprend au lâcher.
+    private var resumeAfterScrub = false
+
+    // Hauteur trouvée par l'analyse pour chaque note de completedNotes (même ordre). Le
+    // vibrato exporté est mesuré par rapport à elle : une note corrigée à la main garde
+    // son vibrato au lieu d'être tirée vers la hauteur chantée.
+    private var analyzedPitches: List<Int> = emptyList()
 
     private val _uiState = MutableStateFlow(RecordingUiState())
     val uiState: StateFlow<RecordingUiState> = _uiState.asStateFlow()
@@ -391,6 +408,7 @@ class RecordingViewModel : ViewModel() {
                 }
             }
             vibratoFrames = analysis?.vibratoFrames ?: emptyList()
+            analyzedPitches = analysis?.notes?.map { it.midiNote } ?: emptyList()
             val takeTrail = withContext(Dispatchers.Default) { buildTakeTrail(frames, taps) }
             val dir = diagnosticsDir
             if (takeDiagnostics != null && dir != null) {
@@ -407,6 +425,7 @@ class RecordingViewModel : ViewModel() {
                     isRefining = false,
                     completedNotes = analysis?.notes ?: emptyList(),
                     takeTrail = takeTrail,
+                    cursorMs = null,
                     errorMessage = if (analysis?.inputTooQuiet == true) {
                         "Je n'ai rien entendu : le son capté est trop faible. Vérifie que le micro est bien actif et chante plus près."
                     } else {
@@ -454,8 +473,16 @@ class RecordingViewModel : ViewModel() {
         stopPreview()
         rawFrameLog.clear()
         vibratoFrames = emptyList()
+        analyzedPitches = emptyList()
         _uiState.update {
-            it.copy(completedNotes = emptyList(), detectedKeyName = null, heldNoteCount = 0, pitchTrail = emptyList(), takeTrail = null)
+            it.copy(
+                completedNotes = emptyList(),
+                detectedKeyName = null,
+                heldNoteCount = 0,
+                pitchTrail = emptyList(),
+                takeTrail = null,
+                cursorMs = null
+            )
         }
     }
 
@@ -492,6 +519,7 @@ class RecordingViewModel : ViewModel() {
             _uiState.update { it.copy(isRefining = true) }
             val analysis = withContext(Dispatchers.Default) { analyzer().analyze(frames, taps) }
             vibratoFrames = analysis.vibratoFrames
+            analyzedPitches = analysis.notes.map { it.midiNote }
             _uiState.update {
                 it.copy(
                     isRefining = false,
@@ -532,7 +560,8 @@ class RecordingViewModel : ViewModel() {
         // Après un décompte, le MIDI commence sur le 1er temps : ce qui précède
         // (le décompte) est coupé, et le reste est décalé d'autant.
         val origin = beatOriginMs
-        val originalNotes = state.completedNotes.filter { it.endTimeMs > origin }
+        val kept = state.completedNotes.indices.filter { state.completedNotes[it].endTimeMs > origin }
+        val originalNotes = kept.map { state.completedNotes[it] }
         val alignedNotes = originalNotes.map {
             it.copy(startTimeMs = (it.startTimeMs - origin).coerceAtLeast(0L), endTimeMs = it.endTimeMs - origin)
         }
@@ -546,7 +575,10 @@ class RecordingViewModel : ViewModel() {
         val outputNotes = if (quantizeOn) quantize(alignedNotes, gridMs = 60_000.0 / bpm / 4) else alignedNotes
 
         val pitchBends = if (state.isPitchBendEnabled) {
-            buildPitchBendCurve(originalNotes, outputNotes, vibratoFrames)
+            // Le vibrato est mesuré autour de la hauteur trouvée par l'analyse, puis appliqué
+            // tel quel : sur une note corrigée à la main, il s'applique à la nouvelle note.
+            val bendBasis = outputNotes.mapIndexed { i, note -> note.copy(midiNote = analyzedPitches.getOrElse(kept[i]) { note.midiNote }) }
+            buildPitchBendCurve(originalNotes, bendBasis, vibratoFrames)
         } else {
             emptyList()
         }
@@ -576,11 +608,16 @@ class RecordingViewModel : ViewModel() {
             _uiState.update { it.copy(errorMessage = "Écoute impossible : ${e.message}") }
             return
         }
-        // Le MIDI commence au début de la prise (ou au 1er temps) : on saute le silence avant la 1re note.
+        // Lecture depuis le curseur ; sans curseur, juste avant la 1re note (le MIDI
+        // commence au début de la prise ou au 1er temps, souvent par du silence).
         val origin = beatOriginMs
-        val firstNoteMs = (notes.minOf { it.startTimeMs } - origin - PREVIEW_LEAD_IN_MS).coerceAtLeast(0L)
-        player.seekTo(firstNoteMs.toInt())
-        player.setOnCompletionListener { stopPreview() }
+        val startMs = _uiState.value.cursorMs ?: (notes.minOf { it.startTimeMs } - PREVIEW_LEAD_IN_MS)
+        player.seekTo((startMs - origin).coerceAtLeast(0L).toInt())
+        player.setOnCompletionListener {
+            // Fin du morceau : le curseur revient au début pour la prochaine écoute.
+            stopPreview()
+            _uiState.update { it.copy(cursorMs = null) }
+        }
         player.start()
         previewPlayer = player
         previewJob = viewModelScope.launch {
@@ -591,16 +628,79 @@ class RecordingViewModel : ViewModel() {
         }
     }
 
+    /** Arrête l'écoute ; le curseur reste là où la lecture en était (pause). */
     fun stopPreview() {
         previewJob?.cancel()
         previewJob = null
         previewPlayer?.release()
         previewPlayer = null
-        _uiState.update { it.copy(playbackPositionMs = null) }
+        _uiState.update { it.copy(cursorMs = it.playbackPositionMs ?: it.cursorMs, playbackPositionMs = null) }
+    }
+
+    /** Place le curseur de lecture (toucher le graphique) ; si l'écoute tourne, elle repart de là. */
+    fun seekTo(positionMs: Long) {
+        val playing = previewPlayer != null
+        if (playing) stopPreview()
+        _uiState.update { it.copy(cursorMs = positionMs) }
+        if (playing) togglePreview()
+    }
+
+    /** Le curseur suit le doigt ; une écoute en cours est suspendue et reprend au lâcher. */
+    fun scrubTo(positionMs: Long) {
+        if (previewPlayer != null) {
+            resumeAfterScrub = true
+            stopPreview()
+        }
+        _uiState.update { it.copy(cursorMs = positionMs) }
+    }
+
+    fun endScrub() {
+        if (resumeAfterScrub) {
+            resumeAfterScrub = false
+            togglePreview()
+        }
+    }
+
+    /** Joue une seule note au piano (roue de choix des notes). */
+    fun auditionNote(midiNote: Int) {
+        val dir = previewDir ?: return
+        auditionPlayer?.release()
+        auditionPlayer = try {
+            val file = File(dir, "note_$midiNote.mid")
+            if (!file.exists()) {
+                file.writeBytes(MidiFileWriter().write(listOf(NoteEvent(midiNote, 0L, AUDITION_NOTE_MS, AUDITION_VELOCITY))))
+            }
+            MediaPlayer().apply {
+                setDataSource(file.path)
+                prepare()
+                start()
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Corrige la hauteur d'une note à la main (choisie dans la roue). */
+    fun setNotePitch(index: Int, midiNote: Int) {
+        stopPreview()
+        _uiState.update { state ->
+            if (index !in state.completedNotes.indices) return@update state
+            state.copy(completedNotes = state.completedNotes.toMutableList().also { it[index] = it[index].copy(midiNote = midiNote) })
+        }
+    }
+
+    /** Supprime une note (ex : un bruit pris pour une note). */
+    fun deleteNote(index: Int) {
+        stopPreview()
+        val notes = _uiState.value.completedNotes
+        if (index !in notes.indices) return
+        if (index in analyzedPitches.indices) analyzedPitches = analyzedPitches.toMutableList().also { it.removeAt(index) }
+        _uiState.update { it.copy(completedNotes = notes.toMutableList().also { list -> list.removeAt(index) }) }
     }
 
     override fun onCleared() {
         stopPreview()
+        auditionPlayer?.release()
         pipeline?.stop()
         metronome?.stop()
         super.onCleared()
