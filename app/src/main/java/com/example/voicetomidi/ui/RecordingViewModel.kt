@@ -554,9 +554,10 @@ class RecordingViewModel : ViewModel() {
         _uiState.update { it.copy(isMetronomeEnabled = !it.isMetronomeEnabled && it.projectBpm != null) }
     }
 
-    fun buildMidiFile(): ByteArray {
-        val state = _uiState.value
+    /** Notes telles qu'écrites dans le MIDI, avec l'index de chacune dans completedNotes. */
+    private class ExportedNotes(val kept: List<Int>, val originalNotes: List<NoteEvent>, val outputNotes: List<NoteEvent>)
 
+    private fun exportedNotes(state: RecordingUiState): ExportedNotes {
         // Après un décompte, le MIDI commence sur le 1er temps : ce qui précède
         // (le décompte) est coupé, et le reste est décalé d'autant.
         val origin = beatOriginMs
@@ -570,9 +571,31 @@ class RecordingViewModel : ViewModel() {
         // projet FL Studio à ce même tempo, chaque note tombe à son instant réel.
         // La quantification n'est proposée qu'avec un tempo donné avant la prise :
         // sans décompte, la grille ne tomberait pas sur les temps chantés.
-        val bpm = state.exportBpm
         val quantizeOn = state.isQuantizeEnabled && state.projectBpm != null
-        val outputNotes = if (quantizeOn) quantize(alignedNotes, gridMs = 60_000.0 / bpm / 4) else alignedNotes
+        val outputNotes = if (quantizeOn) quantize(alignedNotes, gridMs = 60_000.0 / state.exportBpm / 4) else alignedNotes
+        return ExportedNotes(kept, originalNotes, outputNotes)
+    }
+
+    /**
+     * La mélodie à envoyer dans la composition : les notes exportées, avec les
+     * mêmes options. Sans tempo de projet, rien ne cale la prise sur un temps :
+     * elle commence alors à sa 1re note plutôt qu'après un silence.
+     */
+    fun melodyForComposition(): List<NoteEvent> {
+        val state = _uiState.value
+        val notes = exportedNotes(state).outputNotes
+        if (notes.isEmpty() || state.projectBpm != null) return notes
+        val shift = notes.minOf { it.startTimeMs }
+        return notes.map { it.copy(startTimeMs = it.startTimeMs - shift, endTimeMs = it.endTimeMs - shift) }
+    }
+
+    fun buildMidiFile(): ByteArray {
+        val state = _uiState.value
+        val exported = exportedNotes(state)
+        val kept = exported.kept
+        val originalNotes = exported.originalNotes
+        val outputNotes = exported.outputNotes
+        val bpm = state.exportBpm
 
         val pitchBends = if (state.isPitchBendEnabled) {
             // Le vibrato est mesuré autour de la hauteur trouvée par l'analyse, puis appliqué

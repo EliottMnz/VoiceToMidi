@@ -3,6 +3,7 @@ package com.example.voicetomidi.ui.theme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -17,6 +18,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -162,5 +164,25 @@ fun SettingsSwitchRow(
                 uncheckedBorderColor = MaterialTheme.colorScheme.surfaceVariant
             )
         )
+    }
+}
+
+/**
+ * Barre du haut d'un mode : retour à l'accueil à gauche, titre au centre,
+ * action éventuelle à droite (ex : Réglages).
+ */
+@Composable
+fun ScreenHeader(title: String, onBack: () -> Unit, action: @Composable () -> Unit = {}) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp)
+            .heightIn(min = 48.dp)
+    ) {
+        TextButton(onClick = onBack, modifier = Modifier.align(Alignment.CenterStart)) {
+            Text("‹ Accueil", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+        }
+        Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.align(Alignment.Center))
+        Box(modifier = Modifier.align(Alignment.CenterEnd)) { action() }
     }
 }

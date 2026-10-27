@@ -72,6 +72,7 @@ import com.example.voicetomidi.notes.frenchNoteName
 import com.example.voicetomidi.ui.theme.EmoButton
 import com.example.voicetomidi.ui.theme.EmoCard
 import com.example.voicetomidi.ui.theme.EmoOutlinedButton
+import com.example.voicetomidi.ui.theme.ScreenHeader
 import com.example.voicetomidi.ui.theme.SettingsDivider
 import com.example.voicetomidi.ui.theme.SettingsSection
 import com.example.voicetomidi.ui.theme.SettingsSwitchRow
@@ -92,13 +93,15 @@ import java.io.IOException
 import java.util.Locale
 
 /**
- * Écran unique de l'appli, de haut en bas :
- * titre + réglages, grand texte d'état, courbe de la voix, résultat de la
+ * Mode Mélodie, de haut en bas :
+ * retour + réglages, grand texte d'état, courbe de la voix, résultat de la
  * prise (après l'arrêt), puis les commandes à portée de pouce : le pavé
  * "maintiens pendant la note" et le bouton d'enregistrement.
  */
 @Composable
 fun RecordingScreen(
+    onBack: () -> Unit,
+    onSendToComposition: (List<NoteEvent>) -> String,
     modifier: Modifier = Modifier,
     viewModel: RecordingViewModel = viewModel()
 ) {
@@ -160,7 +163,12 @@ fun RecordingScreen(
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            // Retour à l'accueil : on ne laisse ni le micro ni l'écoute tourner.
+            viewModel.stopRecording()
+            viewModel.stopPreview()
+        }
     }
 
     val importLauncher = rememberLauncherForActivityResult(
@@ -192,18 +200,7 @@ fun RecordingScreen(
             .padding(horizontal = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 12.dp, bottom = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                "VoiceToMidi",
-                style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.onBackground,
-                modifier = Modifier.weight(1f)
-            )
+        ScreenHeader(title = "Mélodie", onBack = onBack) {
             TextButton(onClick = { showSettings = true }) {
                 Text("Réglages", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
             }
@@ -262,6 +259,11 @@ fun RecordingScreen(
                         showBpmDialog = true
                     },
                     onTogglePreview = viewModel::togglePreview,
+                    onSendToComposition = {
+                        viewModel.stopPreview()
+                        val name = onSendToComposition(viewModel.melodyForComposition())
+                        Toast.makeText(context, "« $name » ajoutée à la composition", Toast.LENGTH_SHORT).show()
+                    },
                     onNoteClick = editNote,
                     onClear = viewModel::clearNotes
                 )
@@ -404,12 +406,14 @@ private fun ResultCard(
     isPlaying: Boolean,
     onExport: () -> Unit,
     onTogglePreview: () -> Unit,
+    onSendToComposition: () -> Unit,
     onNoteClick: (Int) -> Unit,
     onClear: () -> Unit
 ) {
     var showNotes by remember { mutableStateOf(false) }
     EmoCard {
         EmoButton(text = "Exporter en MIDI", onClick = onExport, modifier = Modifier.fillMaxWidth())
+        EmoOutlinedButton(text = "Envoyer dans la composition", onClick = onSendToComposition, modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             EmoOutlinedButton(
                 text = if (isPlaying) "❚❚  Pause" else "▶  Écouter",
