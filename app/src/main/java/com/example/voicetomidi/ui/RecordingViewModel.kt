@@ -1,5 +1,6 @@
 package com.example.voicetomidi.ui
 
+import android.media.MediaPlayer
 import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.ViewModel
@@ -84,7 +85,9 @@ data class RecordingUiState(
      * courbe se dézoome alors pour montrer la mélodie en entier. Null pendant
      * la prise, ou si rien n'a été chanté.
      */
-    val takeTrail: List<TrailPoint>? = null
+    val takeTrail: List<TrailPoint>? = null,
+    /** Position de l'écoute au piano, sur la timeline de la prise (ms), ou null si rien ne joue. */
+    val playbackPositionMs: Long? = null
 )
 
 /** Bornes d'amplitude RMS utilisées pour normaliser la jauge visuelle (cohérent avec NoteSegmenter). */
@@ -110,6 +113,11 @@ private const val MIN_TAP_MS = 80L
 private const val UI_REFRESH_MS = 33L
 private const val COUNT_IN_REFRESH_MS = 20L
 private const val LAG_TAG = "VoiceToMidiLag"
+
+private const val PREVIEW_FILE_NAME = "ecoute.mid"
+
+/** L'écoute démarre un peu avant la 1re note, pour ne pas la couper. */
+private const val PREVIEW_LEAD_IN_MS = 150L
 
 /** Point de courbe d'une frame : hauteur en demi-tons MIDI, ou null si la hauteur n'est pas fiable. */
 private fun trailPoint(timestampMs: Long, frequencyHz: Float, confidence: Float, isHeld: Boolean) = TrailPoint(
@@ -191,6 +199,12 @@ class RecordingViewModel : ViewModel() {
     /** Dossier où chaque prise au micro est sauvegardée (son brut + mesures), ou null pour ne rien garder. */
     var diagnosticsDir: File? = null
 
+    /** Dossier temporaire où écrire le MIDI à écouter (le synthé d'Android lit un fichier). */
+    var previewDir: File? = null
+
+    private var previewPlayer: MediaPlayer? = null
+    private var previewJob: Job? = null
+
     private val _uiState = MutableStateFlow(RecordingUiState())
     val uiState: StateFlow<RecordingUiState> = _uiState.asStateFlow()
 
@@ -227,6 +241,7 @@ class RecordingViewModel : ViewModel() {
 
     private fun start(source: AudioSource) {
         if (captureJob != null) return
+        stopPreview()
         rawFrameLog.clear()
         tapSegments.clear()
         holdStartMs = null
@@ -436,6 +451,7 @@ class RecordingViewModel : ViewModel() {
     }
 
     fun clearNotes() {
+        stopPreview()
         rawFrameLog.clear()
         vibratoFrames = emptyList()
         _uiState.update {
@@ -471,6 +487,7 @@ class RecordingViewModel : ViewModel() {
         val frames = lastTakeFrames
         if (frames.isEmpty()) return
         val taps = lastTakeTaps
+        stopPreview()
         viewModelScope.launch {
             _uiState.update { it.copy(isRefining = true) }
             val analysis = withContext(Dispatchers.Default) { analyzer().analyze(frames, taps) }
@@ -536,7 +553,54 @@ class RecordingViewModel : ViewModel() {
         return MidiFileWriter(beatsPerMinute = bpm).write(outputNotes, pitchBends)
     }
 
+    /**
+     * Écoute au piano : joue le fichier MIDI tel qu'il serait exporté (mêmes
+     * options), par le synthé General MIDI intégré à Android (programme 0 =
+     * piano). Un 2e appui arrête la lecture.
+     */
+    fun togglePreview() {
+        if (previewPlayer != null) {
+            stopPreview()
+            return
+        }
+        val dir = previewDir ?: return
+        val notes = _uiState.value.completedNotes
+        if (notes.isEmpty() || _uiState.value.isRecording || _uiState.value.isRefining) return
+        val player = try {
+            val file = File(dir, PREVIEW_FILE_NAME).apply { writeBytes(buildMidiFile()) }
+            MediaPlayer().apply {
+                setDataSource(file.path)
+                prepare()
+            }
+        } catch (e: Exception) {
+            _uiState.update { it.copy(errorMessage = "Écoute impossible : ${e.message}") }
+            return
+        }
+        // Le MIDI commence au début de la prise (ou au 1er temps) : on saute le silence avant la 1re note.
+        val origin = beatOriginMs
+        val firstNoteMs = (notes.minOf { it.startTimeMs } - origin - PREVIEW_LEAD_IN_MS).coerceAtLeast(0L)
+        player.seekTo(firstNoteMs.toInt())
+        player.setOnCompletionListener { stopPreview() }
+        player.start()
+        previewPlayer = player
+        previewJob = viewModelScope.launch {
+            while (true) {
+                _uiState.update { it.copy(playbackPositionMs = origin + player.currentPosition) }
+                delay(UI_REFRESH_MS)
+            }
+        }
+    }
+
+    fun stopPreview() {
+        previewJob?.cancel()
+        previewJob = null
+        previewPlayer?.release()
+        previewPlayer = null
+        _uiState.update { it.copy(playbackPositionMs = null) }
+    }
+
     override fun onCleared() {
+        stopPreview()
         pipeline?.stop()
         metronome?.stop()
         super.onCleared()

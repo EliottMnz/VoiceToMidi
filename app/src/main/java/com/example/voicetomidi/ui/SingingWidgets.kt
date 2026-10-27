@@ -73,13 +73,16 @@ private val NATURAL_NAMES = mapOf(0 to "Do", 2 to "Ré", 4 to "Mi", 5 to "Fa", 7
  * Une fois la prise analysée ([takeTrail] non nul), la vue se dézoome pour
  * montrer la mélodie entière : la courbe s'efface au profit des notes
  * trouvées, en barres ([notes]). Dézoomé, le vibrato devenait un zigzag illisible.
+ * Pendant l'écoute au piano, une barre verticale suit [playbackPositionMs] et
+ * la note jouée s'allume.
  */
 @Composable
 fun PitchTrail(
     points: List<TrailPoint>,
     modifier: Modifier = Modifier,
     takeTrail: List<TrailPoint>? = null,
-    notes: List<NoteEvent> = emptyList()
+    notes: List<NoteEvent> = emptyList(),
+    playbackPositionMs: Long? = null
 ) {
     val accent = MaterialTheme.colorScheme.primary
     val background = MaterialTheme.colorScheme.surface
@@ -88,6 +91,7 @@ fun PitchTrail(
     val octaveColor = MaterialTheme.colorScheme.outline
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val heldColor = accent.copy(alpha = 0.12f)
+    val playheadColor = MaterialTheme.colorScheme.onSurface
     val textMeasurer = rememberTextMeasurer()
     val labelStyle = MaterialTheme.typography.labelSmall
 
@@ -191,11 +195,12 @@ fun PitchTrail(
                 val barHeight = rowHeight * 0.72f
                 val corner = CornerRadius(minOf(barHeight / 2, 4.dp.toPx()))
                 for (note in notes) {
+                    val isPlaying = playbackPositionMs != null && playbackPositionMs in note.startTimeMs until note.endTimeMs
                     val left = x(note.startTimeMs)
                     // Un mince espace sépare deux notes collées (sinon "Do Do Do" se lit comme une seule note).
                     val width = (x(note.endTimeMs) - left - 1.5.dp.toPx()).coerceAtLeast(2.dp.toPx())
                     drawRoundRect(
-                        color = accent.copy(alpha = 0.9f * z),
+                        color = (if (isPlaying) playheadColor else accent).copy(alpha = 0.9f * z),
                         topLeft = Offset(left, y(note.midiNote.toFloat()) - barHeight / 2),
                         size = Size(width, barHeight),
                         cornerRadius = corner
@@ -216,6 +221,11 @@ fun PitchTrail(
                 else path.moveTo(x(p.timestampMs), y(s))
                 previousMs = p.timestampMs
             }
+            if (playbackPositionMs != null && z > 0f) {
+                val playheadX = x(playbackPositionMs)
+                drawLine(playheadColor.copy(alpha = z), Offset(playheadX, 0f), Offset(playheadX, size.height), strokeWidth = 2.dp.toPx())
+            }
+
             if (z >= 1f) return@clipRect
             // Le passé s'estompe vers la gauche et un halo donne du relief à la ligne ; le tout s'efface pendant le dézoom.
             val fade = Brush.horizontalGradient(

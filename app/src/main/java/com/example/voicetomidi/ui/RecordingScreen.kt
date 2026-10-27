@@ -91,6 +91,7 @@ fun RecordingScreen(
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
     viewModel.diagnosticsDir = context.getExternalFilesDir("prises")
+    viewModel.previewDir = context.cacheDir
     var showSettings by remember { mutableStateOf(false) }
     var showBpmDialog by remember { mutableStateOf(false) }
 
@@ -125,7 +126,10 @@ fun RecordingScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) viewModel.stopRecording()
+            if (event == Lifecycle.Event.ON_STOP) {
+                viewModel.stopRecording()
+                viewModel.stopPreview()
+            }
             // Retour des réglages : la permission a peut-être été accordée entre-temps.
             if (event == Lifecycle.Event.ON_RESUME) {
                 hasPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
@@ -201,6 +205,7 @@ fun RecordingScreen(
                 points = uiState.pitchTrail,
                 takeTrail = uiState.takeTrail,
                 notes = uiState.completedNotes,
+                playbackPositionMs = uiState.playbackPositionMs,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(240.dp)
@@ -212,7 +217,12 @@ fun RecordingScreen(
             AnimatedVisibility(visible = hasResult, enter = fadeIn(), exit = fadeOut()) {
                 ResultCard(
                     notes = uiState.completedNotes,
-                    onExport = { showBpmDialog = true },
+                    isPlaying = uiState.playbackPositionMs != null,
+                    onExport = {
+                        viewModel.stopPreview()
+                        showBpmDialog = true
+                    },
+                    onTogglePreview = viewModel::togglePreview,
                     onClear = viewModel::clearNotes
                 )
             }
@@ -313,19 +323,35 @@ private fun StatusHeader(uiState: RecordingUiState) {
     }
 }
 
-/** Ce qu'on peut faire de la prise : l'exporter (action principale), voir les notes, recommencer. */
+/**
+ * Ce qu'on peut faire de la prise : l'exporter (action principale), l'écouter
+ * au piano avant, voir les notes, recommencer.
+ */
 @Composable
-private fun ResultCard(notes: List<NoteEvent>, onExport: () -> Unit, onClear: () -> Unit) {
+private fun ResultCard(
+    notes: List<NoteEvent>,
+    isPlaying: Boolean,
+    onExport: () -> Unit,
+    onTogglePreview: () -> Unit,
+    onClear: () -> Unit
+) {
     var showNotes by remember { mutableStateOf(false) }
     EmoCard {
         EmoButton(text = "Exporter en MIDI", onClick = onExport, modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             EmoOutlinedButton(
-                text = if (showNotes) "Masquer les notes" else "Voir les notes",
-                onClick = { showNotes = !showNotes },
+                text = if (isPlaying) "■  Arrêter" else "▶  Écouter",
+                onClick = onTogglePreview,
                 modifier = Modifier.weight(1f)
             )
             EmoOutlinedButton(text = "Effacer", onClick = onClear, modifier = Modifier.weight(1f))
+        }
+        TextButton(onClick = { showNotes = !showNotes }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+            Text(
+                if (showNotes) "Masquer les notes" else "Voir les notes (${notes.size})",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
         if (showNotes) {
             Column {
