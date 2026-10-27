@@ -95,4 +95,6 @@ Le projet utilise Kotlin et Jetpack Compose.
 
 ## Pour aller plus loin
 
+**[`CONTEXTE.md`](CONTEXTE.md)** : tout ce qu'il faut savoir pour développer une partie de l'appli (attentes, architecture, design, Composition, et la partie Drums à construire). À donner à ton agent IA si tu en utilises un.
+
 **[`docs/ETAT_DU_PROJET.md`](docs/ETAT_DU_PROJET.md)** explique tout en détail : le fonctionnement des algorithmes, les résultats mesurés, les limites connues et les pistes pour la suite.

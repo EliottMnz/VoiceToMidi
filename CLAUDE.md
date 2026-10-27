@@ -1,0 +1,1 @@
+Lis d'abord [`CONTEXTE.md`](CONTEXTE.md) en entier (projet, attentes de l'auteur, architecture, design system, Composition, partie Drums), puis [`docs/ETAT_DU_PROJET.md`](docs/ETAT_DU_PROJET.md) pour le détail de la partie Mélodie. Le projet est en français (interface, commentaires, commits).
