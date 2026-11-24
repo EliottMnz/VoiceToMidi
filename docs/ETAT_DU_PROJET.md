@@ -263,3 +263,20 @@ Ce que ça apprend :
 - Existe-t-il un moyen fiable de distinguer une erreur d'octave d'un saut d'octave voulu (harmoniques, timbre, contexte) ?
 - Quelle métrique refléterait le mieux « ce MIDI est utilisable tel quel dans FL Studio » ?
 - Pour la « fausse note de débutant », faut-il une correction automatique ou plutôt une aide à la correction manuelle ?
+
+
+## Mise à jour du 24 novembre 2026 — tempo des projets
+
+- Chaque projet mémorise un `bpm` (40–300, 120 par défaut). Le dernier BPM choisi est conservé dans `projets.json` (`lastBpm`) et proposé pour les nouveaux projets et prises.
+- Une carte « Tempo du projet », dans Projet et Mélodie, réutilise le thème existant : molette compacte de 72 dp (glissement vertical, 3 dp par BPM) et bouton « Ajuster au tempo choisi » à côté. Le BPM se change pendant l'écoute ; pendant la capture/analyse, le réglage est désactivé pour conserver une horloge de prise cohérente.
+- Le bouton cale les notes sur une grille de doubles-croches. Dans Mélodie, il active le calage de l'écoute, de l'export et de l'envoi ; dans Projet, il cale les pistes sauvegardées. Il ne détecte pas automatiquement le tempo d'une voix chantée librement.
+- Chaque piste conserve `sourceBpm` avec ses notes sources. `notesAtTempo(bpm)` calcule les instants affichés/joués sans déformer les sources à chaque changement. Les anciens JSON restent lisibles : BPM et tempo source valent 120 en l'absence des nouveaux champs (instants inchangés).
+- Mélodie ouverte depuis un projet reprend son BPM ; les nouvelles prises ont le décompte correspondant. Le tempo au début de la prise reste la référence pour ralentir/accélérer ensuite. L'envoi précise le tempo source au projet destinataire.
+- `TempoRenderer` (Kotlin pur) synthétise un clavier doux polyphonique ; `TempoPlayer` le diffuse via `AudioTrack`. Une horloge commune règle les notes, une autre les oscillateurs : le BPM change sans transposition et sans rechargement de fichier. Le curseur tient compte des échantillons réellement lus par la sortie. Le pitch bend de la préécoute Mélodie est conservé.
+- La préécoute utilise désormais ce clavier synthétique ; l'export reste un fichier MIDI, dont le timbre dépend de l'instrument choisi dans le DAW. L'écoute d'une note isolée dans la roue conserve le synthé MIDI Android.
+- Tests ajoutés : conservation des temps musicaux et des hauteurs, migration JSON, sauvegarde des tempos, calage après changement de BPM, continuité de l'horloge, fréquence 440 Hz inchangée, seek et silence ; test Android Compose du BPM pendant l'écoute, du calage et de la relecture des projets.
+- La justesse de la transcription et la détection automatique de tempo ne sont pas modifiées. Le rendu sonore reste à valider à l'oreille sur un vrai appareil.
+
+- Tap tempo : bouton compact à côté de la molette, BPM calculé dès le deuxième tap puis stabilisé sur les six derniers intervalles. Les doubles taps trop rapides sont ignorés ; une pause de plus de 1,5 s ou un réglage manuel réinitialise la série. Le BPM emprunte le même chemin de mise à jour et de sauvegarde que la molette.
+
+- Le bouton Tap tempo ouvre désormais un panneau flottant compact (largeur maximale 320 dp) avec une cible de frappe de 180 dp de haut et le BPM en direct. Ouvrir ne compte pas comme un tap ; fermer le panneau conserve le BPM choisi.

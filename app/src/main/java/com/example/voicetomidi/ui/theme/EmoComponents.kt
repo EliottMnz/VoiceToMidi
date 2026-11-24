@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
 /** Bouton plein, pour l'action principale de l'écran (une seule à la fois). */
@@ -58,14 +59,16 @@ fun EmoOutlinedButton(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    contentPadding: PaddingValues = PaddingValues(horizontal = 20.dp),
+    textAlign: TextAlign = TextAlign.Start
 ) {
     Button(
         onClick = onClick,
         modifier = modifier.heightIn(min = 52.dp),
         enabled = enabled,
         shape = MaterialTheme.shapes.medium,
-        contentPadding = PaddingValues(horizontal = 20.dp),
+        contentPadding = contentPadding,
         colors = ButtonDefaults.buttonColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant,
             contentColor = MaterialTheme.colorScheme.primary,
@@ -73,7 +76,7 @@ fun EmoOutlinedButton(
             disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
         )
     ) {
-        Text(text, style = MaterialTheme.typography.labelLarge)
+        Text(text, style = MaterialTheme.typography.labelLarge, textAlign = textAlign)
     }
 }
 

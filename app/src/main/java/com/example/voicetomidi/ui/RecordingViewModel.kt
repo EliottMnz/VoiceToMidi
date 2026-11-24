@@ -1,6 +1,9 @@
 package com.example.voicetomidi.ui
 
 import android.media.MediaPlayer
+import com.example.voicetomidi.audio.TempoPlayer
+import com.example.voicetomidi.project.DEFAULT_PROJECT_BPM
+import com.example.voicetomidi.project.scaleTime
 import android.os.SystemClock
 import android.util.Log
 import androidx.lifecycle.ViewModel
@@ -116,8 +119,6 @@ private const val UI_REFRESH_MS = 33L
 private const val COUNT_IN_REFRESH_MS = 20L
 private const val LAG_TAG = "VoiceToMidiLag"
 
-private const val PREVIEW_FILE_NAME = "ecoute.mid"
-
 /** L'écoute démarre un peu avant la 1re note, pour ne pas la couper. */
 private const val PREVIEW_LEAD_IN_MS = 150L
 
@@ -208,7 +209,8 @@ class RecordingViewModel : ViewModel() {
     /** Dossier temporaire où écrire le MIDI à écouter (le synthé d'Android lit un fichier). */
     var previewDir: File? = null
 
-    private var previewPlayer: MediaPlayer? = null
+    private var previewPlayer: TempoPlayer? = null
+    private var takeBpm = DEFAULT_PROJECT_BPM
     private var previewJob: Job? = null
 
     // Note jouée seule au piano pendant qu'on fait défiler la roue des notes.
@@ -289,6 +291,7 @@ class RecordingViewModel : ViewModel() {
         // Tempo donné : décompte (et métronome si demandé), joué en même temps que le micro
         // tourne. Seulement au micro : un fichier importé ou la démo ont leur propre rythme.
         beatOriginMs = 0L
+        takeBpm = _uiState.value.projectBpm ?: _uiState.value.exportBpm
         val bpm = _uiState.value.projectBpm
         val click = if (bpm != null && source is AudioCaptureManager) Metronome() else null
         metronome = click
@@ -487,7 +490,10 @@ class RecordingViewModel : ViewModel() {
     }
 
     fun toggleQuantize() {
+        val playing = previewPlayer != null
+        stopPreview()
         _uiState.update { it.copy(isQuantizeEnabled = !it.isQuantizeEnabled) }
+        if (playing) togglePreview()
     }
 
     private fun analyzer() = MelodyAnalyzer(
@@ -540,10 +546,13 @@ class RecordingViewModel : ViewModel() {
 
     /** Tempo du projet donné avant la prise (null = aucun : pas de décompte ni de quantification). */
     fun setProjectBpm(bpm: Int?) {
+        if (_uiState.value.isRecording || _uiState.value.isRefining) return
+        val chosen = bpm?.coerceIn(MIN_EXPORT_BPM, MAX_EXPORT_BPM)
+        previewPlayer?.setTempo(chosen ?: takeBpm)
         _uiState.update {
             it.copy(
-                projectBpm = bpm,
-                exportBpm = bpm ?: it.exportBpm,
+                projectBpm = chosen,
+                exportBpm = chosen ?: it.exportBpm,
                 isMetronomeEnabled = it.isMetronomeEnabled && bpm != null,
                 isQuantizeEnabled = it.isQuantizeEnabled && bpm != null
             )
@@ -572,8 +581,28 @@ class RecordingViewModel : ViewModel() {
         // La quantification n'est proposée qu'avec un tempo donné avant la prise :
         // sans décompte, la grille ne tomberait pas sur les temps chantés.
         val quantizeOn = state.isQuantizeEnabled && state.projectBpm != null
-        val outputNotes = if (quantizeOn) quantize(alignedNotes, gridMs = 60_000.0 / state.exportBpm / 4) else alignedNotes
+        val tempo = state.projectBpm ?: takeBpm
+        val timedNotes = alignedNotes.map { note ->
+            val start = scaleTime(note.startTimeMs, takeBpm, tempo)
+            note.copy(startTimeMs = start, endTimeMs = scaleTime(note.endTimeMs, takeBpm, tempo).coerceAtLeast(start + 1))
+        }
+        val outputNotes = if (quantizeOn) quantize(timedNotes, gridMs = 60_000.0 / tempo / 4) else timedNotes
         return ExportedNotes(kept, originalNotes, outputNotes)
+    }
+
+    /** Affiche le calage sur le piano roll en gardant le repère temporel de la voix originale. */
+    fun notesForDisplay(): List<NoteEvent> {
+        val state = _uiState.value
+        if (state.isRecording || state.isRefining) return state.completedNotes
+        val exported = exportedNotes(state)
+        val tempo = state.projectBpm ?: takeBpm
+        val corrected = exported.kept.zip(exported.outputNotes).associate { (index, note) ->
+            index to note.copy(
+                startTimeMs = beatOriginMs + scaleTime(note.startTimeMs, tempo, takeBpm),
+                endTimeMs = beatOriginMs + scaleTime(note.endTimeMs, tempo, takeBpm)
+            )
+        }
+        return state.completedNotes.mapIndexed { index, note -> corrected[index] ?: note }
     }
 
     /**
@@ -614,48 +643,62 @@ class RecordingViewModel : ViewModel() {
      * piano). Un 2e appui arrête la lecture.
      */
     fun togglePreview() {
-        if (previewPlayer != null) {
-            stopPreview()
-            return
+        if (previewPlayer != null) { stopPreview(); return }
+        val state = _uiState.value
+        if (state.completedNotes.isEmpty() || state.isRecording || state.isRefining) return
+        val exported = exportedNotes(state)
+        val tempo = state.projectBpm ?: takeBpm
+        val notes = exported.outputNotes.map { note ->
+            val start = scaleTime(note.startTimeMs, tempo, DEFAULT_PROJECT_BPM)
+            note.copy(startTimeMs = start, endTimeMs = scaleTime(note.endTimeMs, tempo, DEFAULT_PROJECT_BPM).coerceAtLeast(start + 1))
         }
-        val dir = previewDir ?: return
-        val notes = _uiState.value.completedNotes
-        if (notes.isEmpty() || _uiState.value.isRecording || _uiState.value.isRefining) return
-        val player = try {
-            val file = File(dir, PREVIEW_FILE_NAME).apply { writeBytes(buildMidiFile()) }
-            MediaPlayer().apply {
-                setDataSource(file.path)
-                prepare()
+        val bends = if (state.isPitchBendEnabled) {
+            val basis = exported.outputNotes.mapIndexed { i, note ->
+                note.copy(midiNote = analyzedPitches.getOrElse(exported.kept[i]) { note.midiNote })
             }
+            buildPitchBendCurve(exported.originalNotes, basis, vibratoFrames).map {
+                it.copy(timestampMs = scaleTime(it.timestampMs, tempo, DEFAULT_PROJECT_BPM))
+            }
+        } else emptyList()
+        val origin = beatOriginMs
+        val rawStart = state.cursorMs ?: (state.completedNotes.minOf { it.startTimeMs } - PREVIEW_LEAD_IN_MS)
+        val player = try {
+            TempoPlayer(notes, (rawStart - origin).coerceAtLeast(0L).toDouble() * takeBpm / DEFAULT_PROJECT_BPM, tempo, bends)
         } catch (e: Exception) {
             _uiState.update { it.copy(errorMessage = "Écoute impossible : ${e.message}") }
             return
         }
-        // Lecture depuis le curseur ; sans curseur, juste avant la 1re note (le MIDI
-        // commence au début de la prise ou au 1er temps, souvent par du silence).
-        val origin = beatOriginMs
-        val startMs = _uiState.value.cursorMs ?: (notes.minOf { it.startTimeMs } - PREVIEW_LEAD_IN_MS)
-        player.seekTo((startMs - origin).coerceAtLeast(0L).toInt())
-        player.setOnCompletionListener {
-            // Fin du morceau : le curseur revient au début pour la prochaine écoute.
-            stopPreview()
-            _uiState.update { it.copy(cursorMs = null) }
-        }
-        player.start()
         previewPlayer = player
+        _uiState.update { it.copy(playbackPositionMs = rawStart.coerceAtLeast(origin)) }
+        player.start()
         previewJob = viewModelScope.launch {
             while (true) {
-                _uiState.update { it.copy(playbackPositionMs = origin + player.currentPosition) }
+                if (player.completed || player.failure != null) {
+                    val failure = player.failure
+                    stopPreview()
+                    _uiState.update { it.copy(cursorMs = null, errorMessage = failure?.let { message -> "Écoute impossible : $message" }) }
+                    break
+                }
+                _uiState.update { it.copy(playbackPositionMs = origin + scaleTime(player.positionMs().toLong(), DEFAULT_PROJECT_BPM, takeBpm)) }
                 delay(UI_REFRESH_MS)
             }
         }
+    }
+
+    /** Active le calage sur la grille choisie et actualise immédiatement l'écoute. */
+    fun alignToTempo() {
+        if (_uiState.value.isRecording || _uiState.value.isRefining || _uiState.value.projectBpm == null) return
+        val playing = previewPlayer != null
+        stopPreview()
+        _uiState.update { it.copy(isQuantizeEnabled = true) }
+        if (playing) togglePreview()
     }
 
     /** Arrête l'écoute ; le curseur reste là où la lecture en était (pause). */
     fun stopPreview() {
         previewJob?.cancel()
         previewJob = null
-        previewPlayer?.release()
+        previewPlayer?.stop()
         previewPlayer = null
         _uiState.update { it.copy(cursorMs = it.playbackPositionMs ?: it.cursorMs, playbackPositionMs = null) }
     }

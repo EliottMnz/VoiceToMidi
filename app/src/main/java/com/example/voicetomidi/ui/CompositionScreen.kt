@@ -38,6 +38,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -148,7 +153,7 @@ private fun ProjectCard(project: Project, onClick: () -> Unit) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 project.tracks.take(3).forEach { track ->
                     NoteStrip(
-                        notes = track.notes,
+                        notes = track.notesAtTempo(project.bpm),
                         totalMs = project.durationMs,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -168,7 +173,7 @@ private fun trackSummary(project: Project): String {
         1 -> "1 piste"
         else -> "$count pistes"
     }
-    return if (count == 0) tracks else tracks + " · " + formatDuration(project.durationMs)
+    return (if (count == 0) tracks else tracks + " · " + formatDuration(project.durationMs)) + " · ${project.bpm} BPM"
 }
 
 private fun formatDuration(ms: Long): String {
@@ -202,6 +207,15 @@ fun ProjectScreen(
         LaunchedEffect(Unit) { onBack() }
         return
     }
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) viewModel.pause()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val isPlaying = uiState.playingProjectId == project.id
     val position = uiState.positionMs.coerceAtMost(project.durationMs)
 
@@ -229,6 +243,16 @@ fun ProjectScreen(
                 .padding(vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            TempoCard(
+                bpm = project.bpm,
+                onTempoChange = { viewModel.setTempo(project.id, it) },
+                onAlign = {
+                    viewModel.alignToTempo(project.id)
+                    Toast.makeText(context, "Notes calées à ${project.bpm} BPM", Toast.LENGTH_SHORT).show()
+                },
+                canAlign = project.tracks.any { it.notes.isNotEmpty() }
+            )
+            uiState.errorMessage?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (project.tracks.isEmpty()) {
                 EmoCard {
                     Text("Projet vide", style = MaterialTheme.typography.titleMedium)
@@ -248,7 +272,7 @@ fun ProjectScreen(
                 )
                 project.tracks.forEach { track ->
                     TrackRow(
-                        track = track,
+                        track = track.copy(notes = track.notesAtTempo(project.bpm)),
                         totalMs = project.durationMs,
                         positionMs = position.takeIf { isPlaying || it > 0L },
                         onToggleMute = { viewModel.toggleMute(project.id, track.id) },

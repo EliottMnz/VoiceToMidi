@@ -118,9 +118,13 @@ fun RecordingScreen(
     var showSendSheet by remember { mutableStateOf(false) }
     val projectsState by projects.uiState.collectAsState()
     val targetProject = targetProjectId?.let { id -> projectsState.projects.firstOrNull { it.id == id } }
+    // Retrouve le tempo du projet à son ouverture ; une prise déjà analysée garde son tempo source.
+    LaunchedEffect(targetProjectId) {
+        viewModel.setProjectBpm(targetProject?.bpm ?: uiState.projectBpm ?: projectsState.lastBpm)
+    }
     val sendTo = { projectId: Long ->
         viewModel.stopPreview()
-        val trackName = projects.addMelody(projectId, viewModel.melodyForComposition())
+        val trackName = projects.addMelody(projectId, viewModel.melodyForComposition(), uiState.projectBpm ?: uiState.exportBpm)
         val projectName = projects.project(projectId)?.name.orEmpty()
         Toast.makeText(context, "« $trackName » ajoutée à « $projectName »", Toast.LENGTH_SHORT).show()
     }
@@ -231,12 +235,25 @@ fun RecordingScreen(
                 MicrophoneCard(blocked = permissionBlocked, onAllow = askForMicrophone)
             }
 
+            TempoCard(
+                bpm = uiState.projectBpm ?: uiState.exportBpm,
+                onTempoChange = { bpm ->
+                    viewModel.setProjectBpm(bpm)
+                    if (targetProjectId != null) projects.setTempo(targetProjectId, bpm) else projects.rememberTempo(bpm)
+                },
+                onAlign = {
+                    viewModel.alignToTempo()
+                    Toast.makeText(context, "Notes calées au tempo choisi", Toast.LENGTH_SHORT).show()
+                },
+                canAlign = hasResult,
+                enabled = idle
+            )
             StatusHeader(uiState)
 
             PitchTrail(
                 points = uiState.pitchTrail,
                 takeTrail = uiState.takeTrail,
-                notes = uiState.completedNotes,
+                notes = viewModel.notesForDisplay(),
                 playbackPositionMs = uiState.playbackPositionMs,
                 cursorMs = uiState.cursorMs,
                 selectedNoteIndex = editingNoteIndex,
@@ -362,14 +379,18 @@ fun RecordingScreen(
             },
             onCreateAndSend = { name ->
                 showSendSheet = false
-                sendTo(projects.createProject(name))
+                sendTo(projects.createProject(name, uiState.projectBpm ?: uiState.exportBpm))
             },
             onDismiss = { showSendSheet = false }
         )
     }
 
     if (showSettings) {
-        SettingsSheet(uiState = uiState, viewModel = viewModel, onDismiss = { showSettings = false })
+        SettingsSheet(uiState = uiState, viewModel = viewModel, onDismiss = { showSettings = false },
+            onTempoChange = { bpm ->
+                viewModel.setProjectBpm(bpm)
+                if (targetProjectId != null) projects.setTempo(targetProjectId, bpm) else projects.rememberTempo(bpm)
+            })
     }
 
     if (showBpmDialog) {
@@ -591,7 +612,8 @@ private fun SideAction(label: String, enabled: Boolean, onClick: () -> Unit) {
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsSheet(uiState: RecordingUiState, viewModel: RecordingViewModel, onDismiss: () -> Unit) {
+private fun SettingsSheet(uiState: RecordingUiState, viewModel: RecordingViewModel, onDismiss: () -> Unit,
+                          onTempoChange: (Int) -> Unit) {
     val idle = !uiState.isRecording && !uiState.isRefining
     var bpmText by remember { mutableStateOf(uiState.projectBpm?.toString() ?: "") }
 
@@ -631,12 +653,12 @@ private fun SettingsSheet(uiState: RecordingUiState, viewModel: RecordingViewMod
                         value = bpmText,
                         onValueChange = { new ->
                             bpmText = new.filter { it.isDigit() }.take(3)
-                            viewModel.setProjectBpm(bpmText.toIntOrNull()?.takeIf { it in MIN_EXPORT_BPM..MAX_EXPORT_BPM })
+                            bpmText.toIntOrNull()?.takeIf { it in MIN_EXPORT_BPM..MAX_EXPORT_BPM }?.let(onTempoChange)
                         },
                         placeholder = { Text("BPM") },
                         singleLine = true,
                         enabled = idle,
-                        isError = bpmText.isNotEmpty() && uiState.projectBpm == null,
+                        isError = bpmText.toIntOrNull()?.let { it !in MIN_EXPORT_BPM..MAX_EXPORT_BPM } ?: true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         shape = MaterialTheme.shapes.small,
                         colors = OutlinedTextFieldDefaults.colors(
