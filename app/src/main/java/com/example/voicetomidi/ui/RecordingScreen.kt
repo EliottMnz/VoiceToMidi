@@ -65,10 +65,15 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.voicetomidi.audio.AudioFileDecoder
 import com.example.voicetomidi.audio.DemoScenario
+import com.example.voicetomidi.notes.Chord
+import com.example.voicetomidi.notes.ChordColor
 import com.example.voicetomidi.notes.NoteEvent
 import com.example.voicetomidi.notes.Scale
 import com.example.voicetomidi.notes.ScaleConstraint
+import com.example.voicetomidi.notes.chordTones
 import com.example.voicetomidi.notes.frenchNoteName
+import com.example.voicetomidi.notes.velocityFromPercent
+import com.example.voicetomidi.notes.velocityToPercent
 import com.example.voicetomidi.ui.theme.EmoButton
 import com.example.voicetomidi.ui.theme.EmoCard
 import com.example.voicetomidi.ui.theme.EmoOutlinedButton
@@ -128,13 +133,52 @@ fun RecordingScreen(
         val projectName = projects.project(projectId)?.name.orEmpty()
         Toast.makeText(context, "« $trackName » ajoutée à « $projectName »", Toast.LENGTH_SHORT).show()
     }
-    // Note en cours de correction (roue des notes ouverte), et la hauteur visée par la roue.
+    // Note en cours de correction (panneau ouvert), la hauteur visée par la roue et
+    // la place de la note dans la loupe (début, fin).
     var editingNoteIndex by remember { mutableStateOf<Int?>(null) }
     var editingPitch by remember { mutableStateOf<Int?>(null) }
+    var editingTiming by remember { mutableStateOf<NoteEvent?>(null) }
+    var editingVelocityPercent by remember { mutableStateOf<Int?>(null) }
     val editNote = { index: Int ->
         viewModel.stopPreview()
         editingNoteIndex = index
         editingPitch = uiState.completedNotes.getOrNull(index)?.midiNote
+        editingTiming = uiState.completedNotes.getOrNull(index)
+        editingVelocityPercent = uiState.completedNotes.getOrNull(index)?.velocity?.let(::velocityToPercent)
+    }
+    val stopEditing = {
+        editingNoteIndex = null
+        editingPitch = null
+        editingTiming = null
+        editingVelocityPercent = null
+    }
+
+    // Mode « accords » : toucher une note la choisit (au lieu d'ouvrir la correction),
+    // puis la molette règle le nombre de notes de l'accord.
+    var chordMode by remember { mutableStateOf(false) }
+    var chordSelection by remember { mutableStateOf(emptySet<Int>()) }
+    var chordSize by remember { mutableStateOf(DEFAULT_CHORD_SIZE) }
+    var chordColor by remember { mutableStateOf(ChordColor.AUTO) }
+    // On entend l'accord sur la 1re note choisie (sinon sur la 1re note de la mélodie).
+    val auditionChord = { chord: Chord ->
+        val root = uiState.completedNotes.getOrNull(chordSelection.minOrNull() ?: 0)
+        if (root != null) viewModel.auditionChord(root.midiNote, chord)
+    }
+    // Nouvelle prise ou ré-analyse : les numéros des notes ne veulent plus rien dire.
+    LaunchedEffect(uiState.takeTrail, uiState.completedNotes.size) {
+        chordSelection = emptySet()
+    }
+    val onNoteTap = { index: Int ->
+        if (chordMode) {
+            chordSelection = if (index in chordSelection) chordSelection - index else chordSelection + index
+        } else {
+            editNote(index)
+        }
+    }
+    // Les notes telles qu'affichées (calées sur le tempo si demandé) : les accords suivent le même calage.
+    val displayedNotes = viewModel.notesForDisplay()
+    val chordNotes = remember(displayedNotes, uiState.chords, uiState.chordScale) {
+        chordTones(displayedNotes, uiState.chords, uiState.chordScale)
     }
 
     var hasPermission by remember {
@@ -253,15 +297,18 @@ fun RecordingScreen(
             PitchTrail(
                 points = uiState.pitchTrail,
                 takeTrail = uiState.takeTrail,
-                notes = viewModel.notesForDisplay(),
+                notes = displayedNotes,
                 playbackPositionMs = uiState.playbackPositionMs,
                 cursorMs = uiState.cursorMs,
                 selectedNoteIndex = editingNoteIndex,
                 previewPitch = editingPitch,
-                onNoteTap = editNote,
+                onNoteTap = onNoteTap,
                 onSeek = viewModel::seekTo,
                 onScrub = viewModel::scrubTo,
                 onScrubEnd = viewModel::endScrub,
+                previewTiming = editingTiming,
+                chordNotes = chordNotes,
+                highlightedNotes = if (chordMode) chordSelection else emptySet(),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(240.dp)
@@ -270,7 +317,8 @@ fun RecordingScreen(
 
             if (hasResult && uiState.takeTrail != null) {
                 Text(
-                    "Touche une note pour la changer · glisse pour choisir où écouter",
+                    if (chordMode) "Touche une note pour la choisir, touche-la encore pour l'enlever"
+                    else "Touche une note pour la changer, la décaler ou l'allonger · glisse pour choisir où écouter",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -280,7 +328,35 @@ fun RecordingScreen(
 
             uiState.errorMessage?.let { message -> ErrorCard(message) }
 
-            AnimatedVisibility(visible = hasResult, enter = fadeIn(), exit = fadeOut()) {
+            AnimatedVisibility(visible = hasResult && chordMode, enter = fadeIn(), exit = fadeOut()) {
+                ChordCard(
+                    selectedCount = chordSelection.size,
+                    size = chordSize,
+                    onSizeChange = { size ->
+                        chordSize = size
+                        auditionChord(Chord(size, chordColor))
+                    },
+                    color = chordColor,
+                    onColorChange = { color ->
+                        chordColor = color
+                        auditionChord(Chord(chordSize, color))
+                    },
+                    onApply = {
+                        viewModel.setChord(chordSelection, Chord(chordSize, chordColor))
+                        chordSelection = emptySet()
+                    },
+                    onSelectAll = { chordSelection = uiState.completedNotes.indices.toSet() },
+                    onClearSelection = { chordSelection = emptySet() },
+                    isPlaying = uiState.playbackPositionMs != null,
+                    onTogglePreview = viewModel::togglePreview,
+                    onDone = {
+                        chordMode = false
+                        chordSelection = emptySet()
+                    }
+                )
+            }
+
+            AnimatedVisibility(visible = hasResult && !chordMode, enter = fadeIn(), exit = fadeOut()) {
                 ResultCard(
                     notes = uiState.completedNotes,
                     isPlaying = uiState.playbackPositionMs != null,
@@ -300,6 +376,10 @@ fun RecordingScreen(
                         }
                     },
                     onNoteClick = editNote,
+                    onMakeChords = {
+                        viewModel.stopPreview()
+                        chordMode = true
+                    },
                     onClear = viewModel::clearNotes
                 )
             }
@@ -341,30 +421,33 @@ fun RecordingScreen(
     editingNoteIndex?.let { index ->
         val note = uiState.completedNotes.getOrNull(index)
         if (note == null) {
-            editingNoteIndex = null
-            editingPitch = null
+            stopEditing()
         } else {
             NotePickerSheet(
                 position = index + 1,
-                currentPitch = note.midiNote,
+                notes = uiState.completedNotes,
+                index = index,
+                timing = editingTiming ?: note,
+                onTimingChange = { editingTiming = it },
+                velocityPercent = editingVelocityPercent ?: velocityToPercent(note.velocity),
+                onVelocityChange = { editingVelocityPercent = it },
+                onVelocityRelease = { percent ->
+                    viewModel.auditionNote(editingPitch ?: note.midiNote, velocityFromPercent(percent))
+                },
                 onCentered = { pitch ->
                     editingPitch = pitch
-                    viewModel.auditionNote(pitch)
+                    viewModel.auditionNote(pitch, editingVelocityPercent?.let(::velocityFromPercent) ?: note.velocity)
                 },
                 onConfirm = { pitch ->
-                    viewModel.setNotePitch(index, pitch)
-                    editingNoteIndex = null
-                    editingPitch = null
+                    val velocity = editingVelocityPercent?.let(::velocityFromPercent) ?: note.velocity
+                    viewModel.updateNote(index, (editingTiming ?: note).copy(midiNote = pitch, velocity = velocity))
+                    stopEditing()
                 },
                 onDelete = {
                     viewModel.deleteNote(index)
-                    editingNoteIndex = null
-                    editingPitch = null
+                    stopEditing()
                 },
-                onDismiss = {
-                    editingNoteIndex = null
-                    editingPitch = null
-                }
+                onDismiss = stopEditing
             )
         }
     }
@@ -464,12 +547,14 @@ private fun ResultCard(
     sendLabel: String,
     onSendToComposition: () -> Unit,
     onNoteClick: (Int) -> Unit,
+    onMakeChords: () -> Unit,
     onClear: () -> Unit
 ) {
     var showNotes by remember { mutableStateOf(false) }
     EmoCard {
         EmoButton(text = "Exporter en MIDI", onClick = onExport, modifier = Modifier.fillMaxWidth())
         EmoOutlinedButton(text = sendLabel, onClick = onSendToComposition, modifier = Modifier.fillMaxWidth())
+        EmoOutlinedButton(text = "Faire des accords", onClick = onMakeChords, modifier = Modifier.fillMaxWidth())
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             EmoOutlinedButton(
                 text = if (isPlaying) "❚❚  Pause" else "▶  Écouter",
@@ -718,20 +803,30 @@ private fun SettingsSheet(uiState: RecordingUiState, viewModel: RecordingViewMod
 }
 
 /**
- * Choix d'une note à la roue, façon sélecteur d'heure : chaque note qui passe
- * au centre est jouée au piano (et redessinée dans le graphique), pour
- * reconnaître à l'oreille celle qu'on avait en tête.
+ * Correction d'une note. En haut, une loupe ([NoteTimingEditor]) pour la
+ * décaler ou l'allonger ([timing] = sa place en ce moment). En dessous, le
+ * choix de la hauteur à la roue, façon sélecteur d'heure : chaque note qui
+ * passe au centre est jouée au piano (et redessinée dans le graphique), pour
+ * reconnaître à l'oreille celle qu'on avait en tête. Rien n'est changé avant
+ * « Valider ».
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun NotePickerSheet(
     position: Int,
-    currentPitch: Int,
+    notes: List<NoteEvent>,
+    index: Int,
+    timing: NoteEvent,
+    onTimingChange: (NoteEvent) -> Unit,
+    velocityPercent: Int,
+    onVelocityChange: (Int) -> Unit,
+    onVelocityRelease: (Int) -> Unit,
     onCentered: (Int) -> Unit,
     onConfirm: (Int) -> Unit,
     onDelete: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val currentPitch = notes[index].midiNote
     // Aigu en haut, grave en bas, comme dans le graphique.
     val pitches = remember(currentPitch) { (currentPitch + PICKER_RANGE downTo currentPitch - PICKER_RANGE).toList() }
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = PICKER_RANGE)
@@ -764,13 +859,51 @@ private fun NotePickerSheet(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("Note $position", style = MaterialTheme.typography.titleLarge)
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text("Note $position", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                    Text(
+                        String.format(Locale.FRENCH, "%.2f s", timing.durationMs / 1000.0),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 Text(
-                    "Fais défiler : chaque note est jouée au piano.",
+                    "Glisse la note pour la décaler, tire les ronds pour l'allonger.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+
+            NoteTimingEditor(
+                notes = notes,
+                index = index,
+                edited = timing,
+                onChange = onTimingChange,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(96.dp)
+                    .clip(MaterialTheme.shapes.medium)
+            )
+
+            Text(
+                "Force de la note : glisse pour la jouer plus fort ou plus doucement.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            VelocitySlider(
+                percent = velocityPercent,
+                onChange = onVelocityChange,
+                onRelease = onVelocityRelease,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+            )
+
+            Text(
+                "Fais défiler pour changer la note : chacune est jouée au piano.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
 
             Box(
                 modifier = Modifier
@@ -836,6 +969,9 @@ private fun NotePickerSheet(
         }
     }
 }
+
+/** Accord proposé à l'ouverture du mode accords : 3 notes, l'accord le plus courant. */
+private const val DEFAULT_CHORD_SIZE = 3
 
 /** La roue propose une octave au-dessus et une au-dessous de la note actuelle. */
 private const val PICKER_RANGE = 12

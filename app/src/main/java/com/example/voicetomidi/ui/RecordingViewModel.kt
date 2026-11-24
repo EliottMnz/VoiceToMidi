@@ -18,15 +18,24 @@ import com.example.voicetomidi.audio.SyntheticVoiceSource
 import com.example.voicetomidi.audio.TakeDiagnostics
 import com.example.voicetomidi.midi.MidiFileWriter
 import com.example.voicetomidi.notes.AnalysisSteps
+import com.example.voicetomidi.notes.Chord
+import com.example.voicetomidi.notes.DetectedKey
+import com.example.voicetomidi.notes.MAX_CHORD_SIZE
 import com.example.voicetomidi.notes.MelodyAnalyzer
 import com.example.voicetomidi.notes.NoteEvent
+import com.example.voicetomidi.notes.PitchBendEvent
 import com.example.voicetomidi.notes.RawPitchFrame
+import com.example.voicetomidi.notes.Scale
 import com.example.voicetomidi.notes.ScaleConstraint
 import com.example.voicetomidi.notes.TapSegment
+import com.example.voicetomidi.notes.afterRemoving
 import com.example.voicetomidi.notes.buildPitchBendCurve
-import com.example.voicetomidi.notes.frequencyToMidiNote
+import com.example.voicetomidi.notes.chordPitches
 import com.example.voicetomidi.notes.frenchNoteName
+import com.example.voicetomidi.notes.frequencyToMidiNote
 import com.example.voicetomidi.notes.quantize
+import com.example.voicetomidi.notes.withChords
+import com.example.voicetomidi.notes.withUniformVelocity
 import java.util.Collections
 import kotlin.math.log2
 import com.example.voicetomidi.pipeline.VoiceToMidiPipeline
@@ -89,6 +98,13 @@ data class RecordingUiState(
      * la prise, ou si rien n'a été chanté.
      */
     val takeTrail: List<TrailPoint>? = null,
+    /**
+     * Accords ajoutés à la main : index d'une note de [completedNotes] → son accord
+     * (2 à [MAX_CHORD_SIZE] notes, et sa couleur). Une note absente n'a pas d'accord.
+     */
+    val chords: Map<Int, Chord> = emptyMap(),
+    /** Gamme dans laquelle les accords sont construits (celle du projet, sinon la tonalité détectée). */
+    val chordScale: ScaleConstraint? = null,
     /** Position de l'écoute au piano, sur la timeline de la prise (ms), ou null si rien ne joue. */
     val playbackPositionMs: Long? = null,
     /** Curseur de lecture posé par l'utilisateur (ms dans la prise), ou null = début de la mélodie. */
@@ -101,6 +117,17 @@ private const val MAX_GAUGE_AMPLITUDE = 0.5f
 
 /** En dessous, la mesure YIN est trop douteuse pour être tracée (évite les pics parasites). */
 private const val TRAIL_MIN_CONFIDENCE = 0.5f
+
+/**
+ * Gamme des accords : celle choisie pour le projet si c'est une gamme de 7 notes
+ * (majeure ou mineure), sinon la tonalité détectée, même peu sûre (un accord
+ * dans une tonalité approximative sonne mieux qu'un accord majeur partout).
+ */
+private fun chordScaleFor(projectScale: ScaleConstraint?, key: DetectedKey?): ScaleConstraint? = when {
+    projectScale != null && projectScale.scale.semitoneSteps.size == 7 -> projectScale
+    key != null -> ScaleConstraint(if (key.isMinor) Scale.NATURAL_MINOR else Scale.MAJOR, key.tonicPitchClass)
+    else -> null
+}
 
 /** Confiance minimale pour afficher la tonalité détectée à l'utilisateur. */
 private const val MIN_KEY_CONFIDENCE_TO_SHOW = 0.6
@@ -125,6 +152,13 @@ private const val PREVIEW_LEAD_IN_MS = 150L
 /** Note jouée seule dans la roue des notes : assez longue pour être reconnue, assez forte pour être entendue. */
 private const val AUDITION_NOTE_MS = 700L
 private const val AUDITION_VELOCITY = 100
+
+/** Accord joué quand on tourne la molette : un peu plus long qu'une note, pour l'entendre sonner. */
+private const val AUDITION_CHORD_MS = 1200L
+private const val CHORD_AUDITION_FILE_NAME = "accord.mid"
+
+/** Valeur de pitch bend « pas de déviation ». */
+private const val PITCH_BEND_CENTER = 8192
 
 /** Point de courbe d'une frame : hauteur en demi-tons MIDI, ou null si la hauteur n'est pas fiable. */
 private fun trailPoint(timestampMs: Long, frequencyHz: Float, confidence: Float, isHeld: Boolean) = TrailPoint(
@@ -219,10 +253,11 @@ class RecordingViewModel : ViewModel() {
     // Lecture en cours quand l'utilisateur a commencé à faire glisser le curseur : elle reprend au lâcher.
     private var resumeAfterScrub = false
 
-    // Hauteur trouvée par l'analyse pour chaque note de completedNotes (même ordre). Le
-    // vibrato exporté est mesuré par rapport à elle : une note corrigée à la main garde
-    // son vibrato au lieu d'être tirée vers la hauteur chantée.
-    private var analyzedPitches: List<Int> = emptyList()
+    // Chaque note de completedNotes telle que l'analyse l'a trouvée (même ordre). Le vibrato
+    // exporté est mesuré par rapport à elle : une note corrigée à la main garde son vibrato
+    // au lieu d'être tirée vers la hauteur chantée, et une note déplacée ou étirée emporte
+    // le vibrato chanté à son instant d'origine.
+    private var analyzedNotes: List<NoteEvent> = emptyList()
 
     private val _uiState = MutableStateFlow(RecordingUiState())
     val uiState: StateFlow<RecordingUiState> = _uiState.asStateFlow()
@@ -356,7 +391,7 @@ class RecordingViewModel : ViewModel() {
                             currentTrackedMidiNote = frame.trackedNote,
                             currentIntensity = if (frame.trackedNote != null) amplitudeToIntensity(frame.rmsAmplitude) else 0f,
                             pitchTrail = trailSnapshot,
-                            completedNotes = frame.completedNote?.let { current.completedNotes + it }
+                            completedNotes = frame.completedNote?.let { current.completedNotes + listOf(it).withUniformVelocity() }
                                 ?: current.completedNotes
                         )
                     }
@@ -411,7 +446,7 @@ class RecordingViewModel : ViewModel() {
                 }
             }
             vibratoFrames = analysis?.vibratoFrames ?: emptyList()
-            analyzedPitches = analysis?.notes?.map { it.midiNote } ?: emptyList()
+            analyzedNotes = analysis?.notes ?: emptyList()
             val takeTrail = withContext(Dispatchers.Default) { buildTakeTrail(frames, taps) }
             val dir = diagnosticsDir
             if (takeDiagnostics != null && dir != null) {
@@ -426,7 +461,7 @@ class RecordingViewModel : ViewModel() {
             _uiState.update {
                 it.copy(
                     isRefining = false,
-                    completedNotes = analysis?.notes ?: emptyList(),
+                    completedNotes = analysis?.notes?.withUniformVelocity() ?: emptyList(),
                     takeTrail = takeTrail,
                     cursorMs = null,
                     errorMessage = if (analysis?.inputTooQuiet == true) {
@@ -435,7 +470,9 @@ class RecordingViewModel : ViewModel() {
                         it.errorMessage
                     },
                     // Sous ce seuil (ex: 2-3 notes), afficher une tonalité serait trompeur.
-                    detectedKeyName = analysis?.key?.takeIf { key -> key.confidence >= MIN_KEY_CONFIDENCE_TO_SHOW }?.displayName
+                    detectedKeyName = analysis?.key?.takeIf { key -> key.confidence >= MIN_KEY_CONFIDENCE_TO_SHOW }?.displayName,
+                    chords = emptyMap(),
+                    chordScale = chordScaleFor(it.projectScale, analysis?.key)
                 )
             }
 
@@ -476,10 +513,11 @@ class RecordingViewModel : ViewModel() {
         stopPreview()
         rawFrameLog.clear()
         vibratoFrames = emptyList()
-        analyzedPitches = emptyList()
+        analyzedNotes = emptyList()
         _uiState.update {
             it.copy(
                 completedNotes = emptyList(),
+                chords = emptyMap(),
                 detectedKeyName = null,
                 heldNoteCount = 0,
                 pitchTrail = emptyList(),
@@ -525,12 +563,15 @@ class RecordingViewModel : ViewModel() {
             _uiState.update { it.copy(isRefining = true) }
             val analysis = withContext(Dispatchers.Default) { analyzer().analyze(frames, taps) }
             vibratoFrames = analysis.vibratoFrames
-            analyzedPitches = analysis.notes.map { it.midiNote }
+            analyzedNotes = analysis.notes
             _uiState.update {
                 it.copy(
                     isRefining = false,
-                    completedNotes = analysis.notes,
-                    detectedKeyName = analysis.key?.takeIf { key -> key.confidence >= MIN_KEY_CONFIDENCE_TO_SHOW }?.displayName
+                    completedNotes = analysis.notes.withUniformVelocity(),
+                    detectedKeyName = analysis.key?.takeIf { key -> key.confidence >= MIN_KEY_CONFIDENCE_TO_SHOW }?.displayName,
+                    // Les notes ont pu changer de nombre : les accords repartent de zéro.
+                    chords = emptyMap(),
+                    chordScale = chordScaleFor(it.projectScale, analysis.key)
                 )
             }
         }
@@ -612,29 +653,86 @@ class RecordingViewModel : ViewModel() {
      */
     fun melodyForComposition(): List<NoteEvent> {
         val state = _uiState.value
-        val notes = exportedNotes(state).outputNotes
+        val exported = exportedNotes(state)
+        val notes = withChords(exported.outputNotes, exportedChords(state, exported.kept), state.chordScale)
         if (notes.isEmpty() || state.projectBpm != null) return notes
         val shift = notes.minOf { it.startTimeMs }
         return notes.map { it.copy(startTimeMs = it.startTimeMs - shift, endTimeMs = it.endTimeMs - shift) }
     }
 
+    /** Les accords, renumérotés comme les notes exportées (celles d'avant le 1er temps sont retirées). */
+    private fun exportedChords(state: RecordingUiState, kept: List<Int>): Map<Int, Chord> =
+        kept.withIndex().mapNotNull { (i, index) -> state.chords[index]?.let { i to it } }.toMap()
+
     fun buildMidiFile(): ByteArray {
         val state = _uiState.value
-        val exported = exportedNotes(state)
+        val rendered = renderedMelody(state, exportedNotes(state))
+        return MidiFileWriter(beatsPerMinute = state.exportBpm).write(rendered.notes, rendered.pitchBends)
+    }
+
+    /** Ce qui est joué : la mélodie avec ses accords, et le vibrato (pitch bend) à appliquer. */
+    private class RenderedMelody(val notes: List<NoteEvent>, val pitchBends: List<PitchBendEvent>)
+
+    /**
+     * La mélodie telle qu'elle est exportée et écoutée (mêmes notes, mêmes
+     * accords, même vibrato), aux temps de [exported].
+     */
+    private fun renderedMelody(state: RecordingUiState, exported: ExportedNotes): RenderedMelody {
         val kept = exported.kept
         val originalNotes = exported.originalNotes
         val outputNotes = exported.outputNotes
-        val bpm = state.exportBpm
+        val chords = exportedChords(state, kept)
 
         val pitchBends = if (state.isPitchBendEnabled) {
             // Le vibrato est mesuré autour de la hauteur trouvée par l'analyse, puis appliqué
             // tel quel : sur une note corrigée à la main, il s'applique à la nouvelle note.
-            val bendBasis = outputNotes.mapIndexed { i, note -> note.copy(midiNote = analyzedPitches.getOrElse(kept[i]) { note.midiNote }) }
-            buildPitchBendCurve(originalNotes, bendBasis, vibratoFrames)
+            // Les frames sont cherchées à l'instant chanté (note d'origine), puis étalées
+            // sur la note telle qu'elle est maintenant (déplacée, étirée, quantifiée).
+            val analyzed = kept.mapIndexed { i, index -> analyzedNotes.getOrElse(index) { originalNotes[i] } }
+            val bendBasis = outputNotes.mapIndexed { i, note -> note.copy(midiNote = analyzed[i].midiNote) }
+            // Le pitch bend vaut pour tout le canal : sur un accord, il ferait vibrer toutes
+            // ses notes. Les notes en accord restent donc droites (bend remis au centre).
+            val plain = outputNotes.indices.filter { it !in chords }
+            buildPitchBendCurve(plain.map { analyzed[it] }, plain.map { bendBasis[it] }, vibratoFrames) +
+                chords.keys.map { PitchBendEvent(outputNotes[it].startTimeMs, PITCH_BEND_CENTER) }
         } else {
             emptyList()
         }
-        return MidiFileWriter(beatsPerMinute = bpm).write(outputNotes, pitchBends)
+        return RenderedMelody(withChords(outputNotes, chords, state.chordScale), pitchBends)
+    }
+
+    /**
+     * Pose (ou retire, avec une taille de 1) l'accord [chord] sur chacune des
+     * notes [indices]. En couleur « Auto », il suit la gamme [RecordingUiState.chordScale].
+     */
+    fun setChord(indices: Set<Int>, chord: Chord) {
+        stopPreview()
+        _uiState.update { state ->
+            val valid = indices.filter { it in state.completedNotes.indices }
+            val chords = state.chords.toMutableMap()
+            for (index in valid) {
+                if (chord.size <= 1) chords.remove(index) else chords[index] = chord.copy(size = chord.size.coerceAtMost(MAX_CHORD_SIZE))
+            }
+            state.copy(chords = chords)
+        }
+    }
+
+    /** Fait entendre l'accord [chord] bâti sur [root], dans la gamme des accords. */
+    fun auditionChord(root: Int, chord: Chord) {
+        val dir = previewDir ?: return
+        auditionPlayer?.release()
+        auditionPlayer = try {
+            val pitches = chordPitches(root, chord.size, _uiState.value.chordScale, chord.color)
+            val file = File(dir, CHORD_AUDITION_FILE_NAME)
+            file.writeBytes(MidiFileWriter().write(pitches.map { NoteEvent(it, 0L, AUDITION_CHORD_MS, AUDITION_VELOCITY) }))
+            MediaPlayer().apply {
+                setDataSource(file.path)
+                prepare()
+                start()
+            }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /**
@@ -646,20 +744,16 @@ class RecordingViewModel : ViewModel() {
         if (previewPlayer != null) { stopPreview(); return }
         val state = _uiState.value
         if (state.completedNotes.isEmpty() || state.isRecording || state.isRefining) return
-        val exported = exportedNotes(state)
         val tempo = state.projectBpm ?: takeBpm
-        val notes = exported.outputNotes.map { note ->
+        // Mêmes notes, accords et vibrato que l'export, ramenés au tempo de lecture.
+        val rendered = renderedMelody(state, exportedNotes(state))
+        val notes = rendered.notes.map { note ->
             val start = scaleTime(note.startTimeMs, tempo, DEFAULT_PROJECT_BPM)
             note.copy(startTimeMs = start, endTimeMs = scaleTime(note.endTimeMs, tempo, DEFAULT_PROJECT_BPM).coerceAtLeast(start + 1))
         }
-        val bends = if (state.isPitchBendEnabled) {
-            val basis = exported.outputNotes.mapIndexed { i, note ->
-                note.copy(midiNote = analyzedPitches.getOrElse(exported.kept[i]) { note.midiNote })
-            }
-            buildPitchBendCurve(exported.originalNotes, basis, vibratoFrames).map {
-                it.copy(timestampMs = scaleTime(it.timestampMs, tempo, DEFAULT_PROJECT_BPM))
-            }
-        } else emptyList()
+        val bends = rendered.pitchBends.map {
+            it.copy(timestampMs = scaleTime(it.timestampMs, tempo, DEFAULT_PROJECT_BPM))
+        }
         val origin = beatOriginMs
         val rawStart = state.cursorMs ?: (state.completedNotes.minOf { it.startTimeMs } - PREVIEW_LEAD_IN_MS)
         val player = try {
@@ -727,14 +821,14 @@ class RecordingViewModel : ViewModel() {
         }
     }
 
-    /** Joue une seule note au piano (roue de choix des notes). */
-    fun auditionNote(midiNote: Int) {
+    /** Joue une seule note au piano (roue de choix des notes, réglage de la force). */
+    fun auditionNote(midiNote: Int, velocity: Int = AUDITION_VELOCITY) {
         val dir = previewDir ?: return
         auditionPlayer?.release()
         auditionPlayer = try {
-            val file = File(dir, "note_$midiNote.mid")
+            val file = File(dir, "note_${midiNote}_$velocity.mid")
             if (!file.exists()) {
-                file.writeBytes(MidiFileWriter().write(listOf(NoteEvent(midiNote, 0L, AUDITION_NOTE_MS, AUDITION_VELOCITY))))
+                file.writeBytes(MidiFileWriter().write(listOf(NoteEvent(midiNote, 0L, AUDITION_NOTE_MS, velocity))))
             }
             MediaPlayer().apply {
                 setDataSource(file.path)
@@ -746,12 +840,16 @@ class RecordingViewModel : ViewModel() {
         }
     }
 
-    /** Corrige la hauteur d'une note à la main (choisie dans la roue). */
-    fun setNotePitch(index: Int, midiNote: Int) {
+    /**
+     * Remplace une note corrigée à la main (hauteur choisie à la roue, décalée ou
+     * allongée dans la loupe). L'ordre des notes ne change pas : la loupe empêche
+     * de passer une voisine.
+     */
+    fun updateNote(index: Int, note: NoteEvent) {
         stopPreview()
         _uiState.update { state ->
             if (index !in state.completedNotes.indices) return@update state
-            state.copy(completedNotes = state.completedNotes.toMutableList().also { it[index] = it[index].copy(midiNote = midiNote) })
+            state.copy(completedNotes = state.completedNotes.toMutableList().also { it[index] = note })
         }
     }
 
@@ -760,8 +858,13 @@ class RecordingViewModel : ViewModel() {
         stopPreview()
         val notes = _uiState.value.completedNotes
         if (index !in notes.indices) return
-        if (index in analyzedPitches.indices) analyzedPitches = analyzedPitches.toMutableList().also { it.removeAt(index) }
-        _uiState.update { it.copy(completedNotes = notes.toMutableList().also { list -> list.removeAt(index) }) }
+        if (index in analyzedNotes.indices) analyzedNotes = analyzedNotes.toMutableList().also { it.removeAt(index) }
+        _uiState.update {
+            it.copy(
+                completedNotes = notes.toMutableList().also { list -> list.removeAt(index) },
+                chords = it.chords.afterRemoving(index)
+            )
+        }
     }
 
     override fun onCleared() {

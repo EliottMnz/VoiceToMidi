@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Version une couleur du logo, pour les « icônes à thème » d'Android 13+ (le système la teinte). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.05986"
+        android:scaleY="0.05986"
+        android:translateX="26.345"
+        android:translateY="47.116">
+        <path
+            android:pathData="M0,105 C45,105 75,175 125,175 C190,175 195,0 265,0 C335,0 340,230 410,230 C480,230 485,0 555,0 C578,0 592,10 600,22 M648,32 H730 M705,112 H830 M800,192 H925"
+            android:strokeWidth="44"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+    </group>
+</vector>

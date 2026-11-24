@@ -11,8 +11,12 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.horizontalDrag
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,12 +39,15 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -50,10 +57,13 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.lerp
 import com.example.voicetomidi.notes.NoteEvent
+import com.example.voicetomidi.notes.NoteGrab
+import com.example.voicetomidi.notes.editedNote
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
 /** Durée d'historique affichée par [PitchTrail]. */
 const val TRAIL_WINDOW_MS = 4000L
@@ -80,6 +90,8 @@ private val NATURAL_NAMES = mapOf(0 to "Do", 2 to "Ré", 4 to "Mi", 5 to "Fa", 7
  * En vue d'ensemble, le graphique se manipule au doigt : toucher une note
  * appelle [onNoteTap] (pour la changer), toucher ailleurs place le curseur de
  * lecture ([onSeek]) et le faire glisser le déplace ([onScrub], [onScrubEnd]).
+ * Si on la décale ou l'allonge dans la loupe ([NoteTimingEditor]), elle est
+ * dessinée à [previewTiming].
  * Le curseur suit [playbackPositionMs] pendant l'écoute au piano, sinon il
  * reste sur [cursorMs] ; la note jouée s'allume. Pendant qu'on choisit une
  * note, elle est dessinée à [previewPitch] et les autres s'estompent.
@@ -97,7 +109,12 @@ fun PitchTrail(
     onNoteTap: ((Int) -> Unit)? = null,
     onSeek: ((Long) -> Unit)? = null,
     onScrub: ((Long) -> Unit)? = null,
-    onScrubEnd: (() -> Unit)? = null
+    onScrubEnd: (() -> Unit)? = null,
+    previewTiming: NoteEvent? = null,
+    /** Notes ajoutées par les accords : dessinées plus pâles, on ne les touche pas. */
+    chordNotes: List<NoteEvent> = emptyList(),
+    /** Notes choisies pour un accord : elles ressortent en blanc. */
+    highlightedNotes: Set<Int> = emptySet()
 ) {
     val accent = MaterialTheme.colorScheme.primary
     val background = MaterialTheme.colorScheme.surface
@@ -127,10 +144,11 @@ fun PitchTrail(
 
     // Cadre de la vue d'ensemble : toute la durée chantée, toute la tessiture (+ marge),
     // élargi si la roue des notes vise plus haut ou plus bas que la mélodie.
-    val overview = remember(takeTrail, notes, previewPitch) {
+    val overview = remember(takeTrail, notes, previewPitch, chordNotes) {
         val voiced = takeTrail?.filter { it.semitones != null }
         if (voiced.isNullOrEmpty()) return@remember null
         val pitches = notes.map { it.midiNote.toFloat() }.ifEmpty { voiced.map { it.semitones!! } } +
+            chordNotes.map { it.midiNote.toFloat() } +
             listOfNotNull(previewPitch?.toFloat())
         val low = pitches.min()
         val high = pitches.max()
@@ -252,8 +270,19 @@ fun PitchTrail(
             if (z > 0f) {
                 val barHeight = rowHeight * 0.72f
                 val corner = CornerRadius(minOf(barHeight / 2, 4.dp.toPx()))
-                notes.forEachIndexed { index, note ->
+                // Les notes des accords d'abord, plus pâles : la mélodie reste lisible par-dessus.
+                for (note in chordNotes) {
+                    val left = x(note.startTimeMs)
+                    drawRoundRect(
+                        color = accent.copy(alpha = 0.4f * z * if (selectedNoteIndex != null) 0.5f else 1f),
+                        topLeft = Offset(left, y(note.midiNote.toFloat()) - barHeight / 2),
+                        size = Size((x(note.endTimeMs) - left - 1.5.dp.toPx()).coerceAtLeast(2.dp.toPx()), barHeight),
+                        cornerRadius = corner
+                    )
+                }
+                notes.forEachIndexed { index, shownNote ->
                     val isSelected = index == selectedNoteIndex
+                    val note = if (isSelected && previewTiming != null) previewTiming else shownNote
                     val isPlaying = playbackPositionMs != null && playbackPositionMs in note.startTimeMs until note.endTimeMs
                     val pitch = if (isSelected && previewPitch != null) previewPitch else note.midiNote
                     // Une note en cours de choix ressort : les autres s'estompent.
@@ -261,8 +290,9 @@ fun PitchTrail(
                     val left = x(note.startTimeMs)
                     // Un mince espace sépare deux notes collées (sinon "Do Do Do" se lit comme une seule note).
                     val width = (x(note.endTimeMs) - left - 1.5.dp.toPx()).coerceAtLeast(2.dp.toPx())
+                    val isHighlighted = isSelected || index in highlightedNotes
                     drawRoundRect(
-                        color = (if (isPlaying || isSelected) playheadColor else accent).copy(alpha = alpha * z),
+                        color = (if (isPlaying || isHighlighted) playheadColor else accent).copy(alpha = alpha * z),
                         topLeft = Offset(left, y(pitch.toFloat()) - barHeight / 2),
                         size = Size(width, barHeight),
                         cornerRadius = corner
@@ -341,7 +371,6 @@ private class OverviewGeometry(
     fun timeAt(xPx: Float): Long =
         (overview.startMs + (xPx - gutter) / usableWidth * (overview.endMs - overview.startMs)).toLong()
             .coerceIn(overview.startMs, overview.endMs)
-
     /** Index de la note sous le doigt (la plus proche, avec une marge : les barres sont fines), ou null. */
     fun noteAt(notes: List<NoteEvent>, pos: Offset, slopPx: Float, minHalfHeightPx: Float): Int? {
         val halfHeight = maxOf(rowHeight * 0.8f, minHalfHeightPx)
@@ -358,6 +387,216 @@ private class OverviewGeometry(
             }
     }
 }
+
+/**
+ * Loupe sur une note, pour la décaler ou l'allonger au doigt : dans le piano
+ * roll, une note ne fait que quelques millimètres, trop peu pour attraper son
+ * bord. Ici elle occupe un tiers de la largeur, avec ses voisines en gris.
+ *
+ * Faire glisser la note la décale ; tirer une des deux poignées rondes déplace
+ * son début ou sa fin. La note s'arrête contre ses voisines et contre les bords
+ * de la loupe ([editedNote]). [edited] est la note telle qu'elle est en ce
+ * moment, [onChange] reçoit chaque nouvelle position. Le contour pointillé
+ * montre où elle était au départ.
+ */
+@Composable
+fun NoteTimingEditor(
+    notes: List<NoteEvent>,
+    index: Int,
+    edited: NoteEvent,
+    onChange: (NoteEvent) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val accent = MaterialTheme.colorScheme.primary
+    val background = MaterialTheme.colorScheme.surface
+    val neighbourColor = MaterialTheme.colorScheme.surfaceVariant
+    val ghostColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val handleColor = MaterialTheme.colorScheme.onSurface
+    val gridColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+
+    val original = notes[index]
+    // Cadre fixe pendant l'édition, pour que la note reste sous le doigt.
+    val windowStart = remember(original) {
+        (original.startTimeMs + original.endTimeMs) / 2 - maxOf(original.durationMs * 3, MIN_LOUPE_MS) / 2
+    }
+    val windowEnd = remember(original) { windowStart + maxOf(original.durationMs * 3, MIN_LOUPE_MS) }
+
+    val currentEdited by rememberUpdatedState(edited)
+    val currentOnChange by rememberUpdatedState(onChange)
+    val currentNotes by rememberUpdatedState(notes)
+
+    Canvas(
+        modifier
+            .clipToBounds()
+            .semantics { contentDescription = "Loupe sur la note : glisse-la pour la décaler, tire les ronds pour l'allonger" }
+            .pointerInput(windowStart, windowEnd, index) {
+                val padding = LOUPE_PADDING.toPx()
+                val usable = size.width - 2 * padding
+                fun x(t: Long) = padding + (t - windowStart).toFloat() / (windowEnd - windowStart) * usable
+                val touchRadius = 28.dp.toPx()
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val note = currentEdited
+                    val left = x(note.startTimeMs)
+                    val right = x(note.endTimeMs)
+                    val toLeft = abs(down.position.x - left)
+                    val toRight = abs(down.position.x - right)
+                    val grab = when {
+                        toLeft <= touchRadius && toLeft <= toRight -> NoteGrab.START
+                        toRight <= touchRadius -> NoteGrab.END
+                        down.position.x in left..right -> NoteGrab.MOVE
+                        else -> return@awaitEachGesture
+                    }
+                    // Seul un geste horizontal est pris : glisser vers le bas ferme toujours le panneau.
+                    val start = awaitHorizontalTouchSlopOrCancellation(down.id) { change, _ -> change.consume() }
+                        ?: return@awaitEachGesture
+                    val base = currentNotes.toMutableList().also { it[index] = note }
+                    fun follow(px: Float) {
+                        val deltaMs = ((px - down.position.x) / usable * (windowEnd - windowStart)).roundToLong()
+                        currentOnChange(
+                            editedNote(base, index, grab, deltaMs, deltaSemitones = 0, minMs = maxOf(0L, windowStart), maxMs = windowEnd)
+                        )
+                    }
+                    follow(start.position.x)
+                    horizontalDrag(start.id) { change ->
+                        change.consume()
+                        follow(change.position.x)
+                    }
+                }
+            }
+    ) {
+        drawRect(background)
+        val padding = LOUPE_PADDING.toPx()
+        val usable = size.width - 2 * padding
+        fun x(t: Long) = padding + (t - windowStart).toFloat() / (windowEnd - windowStart) * usable
+        val barHeight = 44.dp.toPx()
+        val top = (size.height - barHeight) / 2
+        val corner = CornerRadius(12.dp.toPx())
+
+        // Repères tous les dixièmes de seconde, plus marqués chaque seconde.
+        var tick = (windowStart / 100 + 1) * 100
+        while (tick < windowEnd) {
+            val isSecond = tick % 1000 == 0L
+            drawLine(
+                gridColor.copy(alpha = if (isSecond) 0.9f else 0.35f),
+                Offset(x(tick), 0f),
+                Offset(x(tick), size.height),
+                strokeWidth = if (isSecond) 1.5f else 1f
+            )
+            tick += 100
+        }
+
+        notes.forEachIndexed { i, note ->
+            if (i == index || note.endTimeMs < windowStart || note.startTimeMs > windowEnd) return@forEachIndexed
+            drawRoundRect(neighbourColor, Offset(x(note.startTimeMs), top), Size(x(note.endTimeMs) - x(note.startTimeMs), barHeight), corner)
+        }
+
+        if (edited != original) {
+            drawRoundRect(
+                ghostColor.copy(alpha = 0.6f),
+                Offset(x(original.startTimeMs), top),
+                Size(x(original.endTimeMs) - x(original.startTimeMs), barHeight),
+                corner,
+                style = Stroke(width = 1.5.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 8f)))
+            )
+        }
+
+        val left = x(edited.startTimeMs)
+        val right = x(edited.endTimeMs)
+        drawRoundRect(accent, Offset(left, top), Size(right - left, barHeight), corner)
+
+        // Poignées : un rond clair à chaque bord, avec un trait qui invite à tirer.
+        val handleRadius = 14.dp.toPx()
+        for (edgeX in listOf(left, right)) {
+            val center = Offset(edgeX, size.height / 2)
+            drawCircle(handleColor, radius = handleRadius, center = center)
+            drawLine(accent, center - Offset(0f, 6.dp.toPx()), center + Offset(0f, 6.dp.toPx()), strokeWidth = 2.5.dp.toPx(), cap = StrokeCap.Round)
+        }
+    }
+}
+
+/**
+ * Force d'une note, de 0 à 100 % : une grande barre qu'on remplit au doigt.
+ * Toucher la place directement, glisser l'ajuste par pas de [VELOCITY_STEP] %,
+ * avec un petit « clic » de vibration à chaque pas (plus marqué tous les
+ * 25 %). Au lâcher, [onRelease] permet de faire entendre la note à cette force.
+ */
+@Composable
+fun VelocitySlider(
+    percent: Int,
+    onChange: (Int) -> Unit,
+    onRelease: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val accent = MaterialTheme.colorScheme.primary
+    val track = MaterialTheme.colorScheme.surface
+    val tickColor = MaterialTheme.colorScheme.outline
+    val haptics = LocalHapticFeedback.current
+    val currentPercent by rememberUpdatedState(percent)
+    val currentOnChange by rememberUpdatedState(onChange)
+    val currentOnRelease by rememberUpdatedState(onRelease)
+    val fill by animateFloatAsState(percent / 100f, tween(90), label = "velocityFill")
+
+    Box(
+        modifier
+            .clip(MaterialTheme.shapes.medium)
+            .semantics { contentDescription = "Force de la note : $percent %" }
+            .pointerInput(Unit) {
+                fun percentAt(x: Float): Int =
+                    ((x / size.width * 100f / VELOCITY_STEP).roundToInt() * VELOCITY_STEP).coerceIn(0, 100)
+                fun set(value: Int) {
+                    if (value == currentPercent) return
+                    haptics.performHapticFeedback(
+                        if (value % 25 == 0) HapticFeedbackType.SegmentTick else HapticFeedbackType.SegmentFrequentTick
+                    )
+                    currentOnChange(value)
+                }
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    down.consume()
+                    var value = percentAt(down.position.x)
+                    set(value)
+                    val start = awaitHorizontalTouchSlopOrCancellation(down.id) { change, _ -> change.consume() }
+                    if (start != null) {
+                        value = percentAt(start.position.x)
+                        set(value)
+                        horizontalDrag(start.id) { change ->
+                            change.consume()
+                            value = percentAt(change.position.x)
+                            set(value)
+                        }
+                    }
+                    currentOnRelease(value)
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(Modifier.matchParentSize()) {
+            drawRect(track)
+            drawRect(accent, size = Size(size.width * fill, size.height))
+            // Repères tous les 25 %, comme des crans.
+            for (mark in listOf(0.25f, 0.5f, 0.75f)) {
+                drawLine(
+                    tickColor.copy(alpha = if (mark < fill) 0.35f else 0.8f),
+                    Offset(size.width * mark, size.height * 0.3f),
+                    Offset(size.width * mark, size.height * 0.7f),
+                    strokeWidth = 1.5.dp.toPx(),
+                    cap = StrokeCap.Round
+                )
+            }
+        }
+        Text("$percent %", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
+    }
+}
+
+/** Pas de la barre de force : assez fin pour nuancer, assez gros pour qu'on sente chaque cran. */
+private const val VELOCITY_STEP = 5
+
+/** La loupe montre au moins cette durée, pour qu'une note très courte ait de la place pour s'allonger. */
+private const val MIN_LOUPE_MS = 1500L
+
+/** Marge à gauche et à droite de la loupe, pour que les poignées ne soient jamais coupées. */
+private val LOUPE_PADDING = 20.dp
 
 /** Sans position choisie, le curseur attend un peu avant la 1re note (comme l'écoute). */
 private const val CURSOR_LEAD_IN_MS = 150L
